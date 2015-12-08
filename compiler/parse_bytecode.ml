@@ -442,18 +442,8 @@ module State = struct
     (*    | Addr x  -> Format.fprintf f "[%d]" x*)
     | Dummy   -> Format.fprintf f "???"
 
-  type stack = {
-    var : Var.t;
-    contents : elt list;
-    handle_value : Var.t option;
-    handle_exception : Var.t option;
-    handle_effect : Var.t option;
-    parent : Var.t option;
-  }
-
   type t =
-    { accu : elt; stack : stack; suspended_stacks : stack VarMap.t;
-      env : elt array; env_offset : int;
+    { accu : elt; stack : elt list; env : elt array; env_offset : int;
       handlers : (Var.t * addr * int) list; globals : globals }
 
   let fresh_var state =
@@ -479,55 +469,29 @@ module State = struct
         []     -> assert false
       | _ :: r -> st_pop (n - 1) r
 
-  let push st = {st with stack = {st.stack with
-                                  contents = st.accu :: st.stack.contents }}
+  let push st = {st with stack = st.accu :: st.stack }
 
-  let pop n st = {st with stack = {st.stack with
-                                   contents = st_pop n st.stack.contents}}
+  let pop n st = {st with stack = st_pop n st.stack }
 
-  let acc n st = {st with accu = List.nth st.stack.contents n}
+  let acc n st = {st with accu = List.nth st.stack n}
 
   let env_acc n st = {st with accu = st.env.(st.env_offset + n)}
 
   let accu st = elt_to_var st.accu
 
-  let alloc_stack st hv hexn heff =
-    let x, st = fresh_var st in
-    let st =
-      { st with suspended_stacks =
-                  VarMap.add x
-                    { var = x;
-                      contents = [];
-                      handle_value = Some hv;
-                      handle_exception = Some hexn;
-                      handle_effect = Some heff;
-                      parent = None;
-                    }
-                    st.suspended_stacks } in
-    x, st
-
-  let switch_stack st stack =
-    let oldstack = st.stack in
-    let newstack = VarMap.find stack st.suspended_stacks in
-    { st with suspended_stacks =
-                st.suspended_stacks
-                |> VarMap.remove newstack.var
-                |> VarMap.add oldstack.var oldstack;
-              stack = newstack }
-
   let stack_vars st =
     List.fold_left
       (fun l e -> match e with Var x -> x :: l | Dummy -> l)
-      [] (st.accu :: st.stack.contents)
+      [] (st.accu :: st.stack)
 
   let set_accu st x = {st with accu = Var x}
 
   let clear_accu st = {st with accu = Dummy}
 
-  let peek n st = elt_to_var (List.nth st.stack.contents n)
+  let peek n st = elt_to_var (List.nth st.stack n)
 
   let grab n st =
-    (List.map elt_to_var (list_start n st.stack.contents), pop n st)
+    (List.map elt_to_var (list_start n st.stack), pop n st)
 
   let rec st_assign s n x =
     match s with
@@ -537,15 +501,14 @@ module State = struct
       if n = 0 then x :: rem else y :: st_assign rem (n - 1) x
 
   let assign st n =
-    {st with stack = {st.stack with
-                      contents = st_assign st.stack.contents n st.accu }}
+    {st with stack = st_assign st.stack n st.accu }
 
   let start_function state env offset =
-    {state with accu = Dummy; stack = {state.stack with contents = []};
+    {state with accu = Dummy; stack = [];
                 env = env; env_offset = offset; handlers = []}
 
   let start_block state =
-    let contents =
+    let stack =
       List.fold_right
         (fun e stack ->
            match e with
@@ -555,9 +518,9 @@ module State = struct
              let y = Var.fresh () in
              Var.propagate_name x y;
              Var y :: stack)
-        state.stack.contents []
+        state.stack []
     in
-    let state = { state with stack = { state.stack with contents } } in
+    let state = { state with stack } in
     match state.accu with
       Dummy -> state
     | Var x ->
@@ -567,7 +530,7 @@ module State = struct
 
   let push_handler state x addr =
     { state
-      with handlers = (x, addr, List.length state.stack.contents)
+      with handlers = (x, addr, List.length state.stack)
                       :: state.handlers }
 
   let pop_handler state =
@@ -581,25 +544,12 @@ module State = struct
       let state =
         { state
           with accu = Var x;
-               stack = { state.stack
-                         with contents =
-                                st_pop
-                                  (List.length state.stack.contents - len)
-                                  state.stack.contents} }
+               stack = st_pop (List.length state.stack - len) state.stack }
       in
       Some (x, (addr, stack_vars state))
 
   let initial g =
-    let x = Var.fresh () in
-    { accu = Dummy;
-      stack = { var = x;
-                contents = [];
-                handle_value = None;
-                handle_exception = None;
-                handle_effect = None;
-                parent = None
-              };
-      suspended_stacks = VarMap.empty;
+    { accu = Dummy; stack = [];
       env = [||]; env_offset = 0; handlers = [];
       globals = g }
 
@@ -616,7 +566,7 @@ module State = struct
 
   let print st =
     Format.eprintf "{ %a | %a | (%d) %a }@."
-      print_elt st.accu print_stack_contents st.stack.contents
+      print_elt st.accu print_stack_contents st.stack
       st.env_offset print_env st.env
 
   let rec name_rec i l s =
@@ -630,7 +580,7 @@ module State = struct
     | _ ->
       assert false
 
-  let name_vars st l = name_rec 0 l st.stack.contents
+  let name_vars st l = name_rec 0 l st.stack
 
   let rec make_stack i state =
     if i = 0
@@ -840,11 +790,8 @@ and compile infos pc state instrs =
       compile infos (pc + 2) (State.env_acc n (State.push state)) instrs
     | PUSH_RETADDR ->
       compile infos (pc + 2)
-        {state with State.stack =
-                      {state.State.stack
-                       with State.contents =
-                              State.Dummy :: State.Dummy :: State.Dummy
-                              :: state.State.stack.State.contents}}
+        {state with State.stack = State.Dummy :: State.Dummy :: State.Dummy
+                                  :: state.State.stack}
         instrs
     | APPLY ->
       let n = getu code (pc + 1) in
@@ -1321,10 +1268,8 @@ and compile infos pc state instrs =
       compile_block infos.blocks infos.debug code (pc + 2)
         {(State.push_handler state x addr)
          with State.stack =
-                {state.State.stack
-                 with State.contents =
-                        State.Dummy :: State.Dummy :: State.Dummy :: State.Dummy ::
-                        state.State.stack.State.contents}};
+                State.Dummy :: State.Dummy :: State.Dummy :: State.Dummy ::
+                state.State.stack};
       (instrs,
        Pushtrap ((pc + 2, State.stack_vars state), x,
                  (addr, State.stack_vars state'), -1), state)
@@ -1367,18 +1312,15 @@ and compile infos pc state instrs =
       let y = State.accu state in
       let z = State.peek 0 state in
       let t = State.peek 1 state in
+      let (x, state) = State.fresh_var state in
+      if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
+          Var.print x prim Var.print y Var.print z Var.print t;
 
       if prim = "caml_alloc_stack" then begin
-        let (x, state) = State.alloc_stack state y z t in
-        if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
-            Var.print x prim Var.print y Var.print z Var.print t;
         compile infos (pc + 2) (State.pop 2 state)
           (Let (x, Prim (Alloc_stack, [Pv y; Pv z; Pv t])) :: instrs)
 
       end else begin
-        let (x, state) = State.fresh_var state in
-        if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
-            Var.print x prim Var.print y Var.print z Var.print t;
         compile infos (pc + 2) (State.pop 2 state)
           (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
       end
