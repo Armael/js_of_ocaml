@@ -318,6 +318,8 @@ end = struct
         scan debug blocks code (pc + 3) len
       | KStop n ->
         scan debug blocks code (pc + n + 1) len
+      | KContextSwitch n ->
+        scan debug blocks code (pc + n + 1) len
       | K_will_not_happen -> assert false
     end
     else blocks
@@ -467,9 +469,9 @@ module State = struct
         []     -> assert false
       | _ :: r -> st_pop (n - 1) r
 
-  let push st = {st with stack = st.accu :: st.stack}
+  let push st = {st with stack = st.accu :: st.stack }
 
-  let pop n st = {st with stack = st_pop n st.stack}
+  let pop n st = {st with stack = st_pop n st.stack }
 
   let acc n st = {st with accu = List.nth st.stack n}
 
@@ -488,7 +490,8 @@ module State = struct
 
   let peek n st = elt_to_var (List.nth st.stack n)
 
-  let grab n st = (List.map elt_to_var (list_start n st.stack), pop n st)
+  let grab n st =
+    (List.map elt_to_var (list_start n st.stack), pop n st)
 
   let rec st_assign s n x =
     match s with
@@ -501,8 +504,8 @@ module State = struct
     {st with stack = st_assign st.stack n st.accu }
 
   let start_function state env offset =
-    {state with accu = Dummy; stack = []; env = env; env_offset = offset;
-                handlers = []}
+    {state with accu = Dummy; stack = [];
+                env = env; env_offset = offset; handlers = []}
 
   let start_block state =
     let stack =
@@ -517,7 +520,7 @@ module State = struct
              Var y :: stack)
         state.stack []
     in
-    let state = { state with stack = stack } in
+    let state = { state with stack } in
     match state.accu with
       Dummy -> state
     | Var x ->
@@ -527,7 +530,8 @@ module State = struct
 
   let push_handler state x addr =
     { state
-      with handlers = (x, addr, List.length state.stack) :: state.handlers }
+      with handlers = (x, addr, List.length state.stack)
+                      :: state.handlers }
 
   let pop_handler state =
     { state with handlers = List.tl state.handlers }
@@ -540,18 +544,19 @@ module State = struct
       let state =
         { state
           with accu = Var x;
-               stack = st_pop (List.length state.stack - len) state.stack}
+               stack = st_pop (List.length state.stack - len) state.stack }
       in
       Some (x, (addr, stack_vars state))
 
   let initial g =
-    { accu = Dummy; stack = []; env = [||]; env_offset = 0; handlers = [];
+    { accu = Dummy; stack = [];
+      env = [||]; env_offset = 0; handlers = [];
       globals = g }
 
-  let rec print_stack f l =
+  let rec print_stack_contents f l =
     match l with
       [] -> ()
-    | v :: r -> Format.fprintf f "%a %a" print_elt v print_stack r
+    | v :: r -> Format.fprintf f "%a %a" print_elt v print_stack_contents r
 
   let print_env f e =
     Array.iteri
@@ -561,7 +566,8 @@ module State = struct
 
   let print st =
     Format.eprintf "{ %a | %a | (%d) %a }@."
-      print_elt st.accu print_stack st.stack st.env_offset print_env st.env
+      print_elt st.accu print_stack_contents st.stack
+      st.env_offset print_env st.env
 
   let rec name_rec i l s =
     match l, s with
@@ -670,7 +676,7 @@ let rec compile_block blocks debug code pc state =
           (fun (pc', _) -> compile_block blocks debug code pc' state') l1;
         Array.iter
           (fun (pc', _) -> compile_block blocks debug code pc' state') l2
-      | Pushtrap _ | Raise _ | Return _ | Stop ->
+      | Pushtrap _ | Raise _ | Return _ | Stop | Resume _ | Perform _ | Delegate _ ->
         ()
     end
   end
@@ -784,8 +790,8 @@ and compile infos pc state instrs =
       compile infos (pc + 2) (State.env_acc n (State.push state)) instrs
     | PUSH_RETADDR ->
       compile infos (pc + 2)
-        {state with State.stack =
-                      State.Dummy :: State.Dummy :: State.Dummy :: state.State.stack}
+        {state with State.stack = State.Dummy :: State.Dummy :: State.Dummy
+                                  :: state.State.stack}
         instrs
     | APPLY ->
       let n = getu code (pc + 1) in
@@ -1086,27 +1092,27 @@ and compile infos pc state instrs =
       end;
       compile infos (pc + 2) state
         (Let (x, Block (254, Array.of_list contents)) :: instrs)
-    | GETFIELD0 ->
+    | GETFIELD0 | GETMUTABLEFIELD0 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[0]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 0)) :: instrs)
-    | GETFIELD1 ->
+    | GETFIELD1 | GETMUTABLEFIELD1 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[1]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 1)) :: instrs)
-    | GETFIELD2 ->
+    | GETFIELD2 | GETMUTABLEFIELD2 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[2]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 2)) :: instrs)
-    | GETFIELD3 ->
+    | GETFIELD3 | GETMUTABLEFIELD3 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[3]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 3)) :: instrs)
-    | GETFIELD ->
+    | GETFIELD | GETMUTABLEFIELD ->
       let y = State.accu state in
       let n = getu code (pc + 1) in
       let (x, state) = State.fresh_var state in
@@ -1309,8 +1315,15 @@ and compile infos pc state instrs =
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
           Var.print x prim Var.print y Var.print z Var.print t;
-      compile infos (pc + 2) (State.pop 2 state)
-        (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
+
+      if prim = "caml_alloc_stack" then begin
+        compile infos (pc + 2) (State.pop 2 state)
+          (Let (x, Prim (Alloc_stack, [Pv y; Pv z; Pv t])) :: instrs)
+
+      end else begin
+        compile infos (pc + 2) (State.pop 2 state)
+          (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
+      end
     | C_CALL4 ->
       let nargs = 4 in
       let prim = primitive_name state (getu code (pc + 1)) in
@@ -1664,6 +1677,35 @@ and compile infos pc state instrs =
          Let (meths, Field (obj, 0)) :: instrs)
     | STOP ->
       (instrs, Stop, state)
+    | RESUME ->
+      let stack = State.accu state in
+      let func = State.peek 0 state in
+      let arg = State.peek 1 state in
+      let state = State.pop 2 state in
+      let (ret, state) = State.fresh_var state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs,
+       Resume (ret, (stack, func, arg), Some (pc + 1, State.stack_vars state)),
+       state)
+    | RESUMETERM ->
+      let stack = State.accu state in
+      let func = State.peek 0 state in
+      let arg = State.peek 1 state in
+      let state = State.pop 2 state in
+      let (ret, state) = State.fresh_var state in
+      (instrs,
+       Resume (ret, (stack, func, arg), None),
+       state)
+    | PERFORM ->
+      let eff = State.accu state in
+      let (ret, state) = State.fresh_var state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs, Perform (ret, eff, (pc + 1, State.stack_vars state)), state)
+    | DELEGATETERM ->
+      let eff = State.accu state in
+      let stack = State.peek 0 state in
+      let state = State.pop 2 state in
+      (instrs, Delegate (eff, stack), state)
     | EVENT
     | BREAK
     | FIRST_UNIMPLEMENTED_OP -> assert false
@@ -1682,9 +1724,10 @@ let (>>) x f = f x
 let fold_children blocks pc f accu =
   let block = AddrMap.find pc blocks in
   match block.branch with
-    Return _ | Raise _ | Stop ->
+    Return _ | Raise _ | Stop | Resume (_, _, None) | Delegate _ ->
     accu
-  | Branch (pc', _) | Poptrap (pc', _) ->
+  | Branch (pc', _) | Poptrap (pc', _)
+  | Resume (_, _, Some (pc', _)) | Perform (_, _, (pc', _)) ->
     f pc' accu
   | Cond (_, _, (pc1, _), (pc2, _)) | Pushtrap ((pc1, _), _, (pc2, _), _) ->
     f pc1 accu >> f pc1 >> f pc2

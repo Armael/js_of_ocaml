@@ -91,6 +91,11 @@ type t =
   | GETFIELD2
   | GETFIELD3
   | GETFIELD
+  | GETMUTABLEFIELD0
+  | GETMUTABLEFIELD1
+  | GETMUTABLEFIELD2
+  | GETMUTABLEFIELD3
+  | GETMUTABLEFIELD
   | GETFLOATFIELD
   | SETFIELD0
   | SETFIELD1
@@ -167,6 +172,10 @@ type t =
   | BREAK
   | RERAISE
   | RAISE_NOTRACE
+  | PERFORM
+  | RESUME
+  | RESUMETERM
+  | DELEGATETERM
   | FIRST_UNIMPLEMENTED_OP
 
 type kind =
@@ -183,6 +192,7 @@ type kind =
   | KUnaryCall
   | KBinaryCall
   | KStop of int
+  | KContextSwitch of int
   | K_will_not_happen
 
 type desc = { code : t; kind : kind; name : string; opcode : int }

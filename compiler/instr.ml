@@ -91,6 +91,11 @@ type t =
   | GETFIELD2
   | GETFIELD3
   | GETFIELD
+  | GETMUTABLEFIELD0
+  | GETMUTABLEFIELD1
+  | GETMUTABLEFIELD2
+  | GETMUTABLEFIELD3
+  | GETMUTABLEFIELD
   | GETFLOATFIELD
   | SETFIELD0
   | SETFIELD1
@@ -167,6 +172,10 @@ type t =
   | BREAK
   | RERAISE
   | RAISE_NOTRACE
+  | PERFORM
+  | RESUME
+  | RESUMETERM
+  | DELEGATETERM
   | FIRST_UNIMPLEMENTED_OP
 
 
@@ -184,6 +193,7 @@ type kind =
   | KUnaryCall
   | KBinaryCall
   | KStop of int
+  | KContextSwitch of int
   | K_will_not_happen
 
 type desc = { code : t; kind : kind; name : string; opcode : int }
@@ -268,6 +278,11 @@ let ops,ops_rev =
        GETFIELD2, KNullary, "GETFIELD2";
        GETFIELD3, KNullary, "GETFIELD3";
        GETFIELD, KUnary, "GETFIELD";
+       GETMUTABLEFIELD0, KNullary, "GETMUTABLEFIELD0";
+       GETMUTABLEFIELD1, KNullary, "GETMUTABLEFIELD1";
+       GETMUTABLEFIELD2, KNullary, "GETMUTABLEFIELD2";
+       GETMUTABLEFIELD3, KNullary, "GETMUTABLEFIELD3";
+       GETMUTABLEFIELD, KUnary, "GETMUTABLEFIELD";
        GETFLOATFIELD, KUnary, "GETFLOATFIELD";
        SETFIELD0, KNullary, "SETFIELD0";
        SETFIELD1, KNullary, "SETFIELD1";
@@ -344,6 +359,10 @@ let ops,ops_rev =
        BREAK, K_will_not_happen, "BREAK";
        RERAISE, if_v4 (KStop 0) K_will_not_happen, "RERAISE";
        RAISE_NOTRACE, if_v4 (KStop 0) K_will_not_happen, "RAISE_NOTRACE";
+       PERFORM, KContextSwitch 0, "PERFORM";
+       RESUME, KContextSwitch 0, "RESUME";
+       RESUMETERM, KStop 1, "RESUMETERM";
+       DELEGATETERM, KStop 1, "DELEGATETERM";
        FIRST_UNIMPLEMENTED_OP, K_will_not_happen, "FIRST_UNIMPLEMENTED_OP"|] in
   let ops =
     Array.mapi

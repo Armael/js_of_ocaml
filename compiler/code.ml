@@ -132,6 +132,7 @@ type prim =
   | Extern of string
   | Not | IsInt
   | Eq | Neq | Lt | Le | Ult
+  | Alloc_stack
 
 type constant =
     String of string
@@ -172,6 +173,9 @@ type last =
   | Switch of Var.t * cont array * cont array
   | Pushtrap of cont * Var.t * cont * addr
   | Poptrap of cont
+  | Resume of Var.t * (Var.t * Var.t * Var.t) * cont option
+  | Perform of Var.t * Var.t * cont
+  | Delegate of Var.t * Var.t
 
 type block =
   { params : Var.t list;
@@ -277,6 +281,8 @@ let print_prim f p l =
   | Lt,  [x; y]       -> Format.fprintf f "%a < %a" print_arg x print_arg y
   | Le,  [x; y]       -> Format.fprintf f "%a <= %a" print_arg x print_arg y
   | Ult, [x; y]       -> Format.fprintf f "%a <= %a" print_arg x print_arg y
+  | Alloc_stack, [x; y; z] ->
+    Format.fprintf f "alloc_stack(%a, %a, %a)" print_arg x print_arg y print_arg z
   | _                 -> assert false
 
 let print_expr f e =
@@ -347,6 +353,18 @@ let print_last f l =
         print_cont cont1 Var.print x print_cont cont2 pc
   | Poptrap cont ->
       Format.fprintf f "poptrap %a" print_cont cont
+  | Resume (ret, (stack, func, arg), Some cont) ->
+      Format.fprintf f "%a = resume (%a, %a, %a) continuation %a"
+        Var.print ret Var.print stack Var.print func Var.print arg print_cont cont
+  | Resume (ret, (stack, func, arg), None) ->
+      Format.fprintf f "%a = resume_term (%a, %a, %a)"
+        Var.print ret Var.print stack Var.print func Var.print arg
+  | Perform (ret, eff, cont) ->
+      Format.fprintf f "%a = perform %a continuation %a"
+        Var.print ret Var.print eff print_cont cont
+  | Delegate (eff, stack) ->
+      Format.fprintf f "delegate (%a, %a)"
+        Var.print eff Var.print stack
 
 type xinstr = Instr of instr | Last of last
 
