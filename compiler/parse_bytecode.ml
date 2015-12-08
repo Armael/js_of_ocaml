@@ -318,6 +318,8 @@ end = struct
         scan debug blocks code (pc + 3) len
       | KStop n ->
         scan debug blocks code (pc + n + 1) len
+      | KContextSwitch n ->
+        scan debug blocks code (pc + n + 1) len
       | K_will_not_happen -> assert false
     end
     else blocks
@@ -440,8 +442,18 @@ module State = struct
     (*    | Addr x  -> Format.fprintf f "[%d]" x*)
     | Dummy   -> Format.fprintf f "???"
 
+  type stack = {
+    var : Var.t;
+    contents : elt list;
+    handle_value : Var.t option;
+    handle_exception : Var.t option;
+    handle_effect : Var.t option;
+    parent : Var.t option;
+  }
+
   type t =
-    { accu : elt; stack : elt list; env : elt array; env_offset : int;
+    { accu : elt; stack : stack; suspended_stacks : stack VarMap.t;
+      env : elt array; env_offset : int;
       handlers : (Var.t * addr * int) list; globals : globals }
 
   let fresh_var state =
@@ -467,28 +479,55 @@ module State = struct
         []     -> assert false
       | _ :: r -> st_pop (n - 1) r
 
-  let push st = {st with stack = st.accu :: st.stack}
+  let push st = {st with stack = {st.stack with
+                                  contents = st.accu :: st.stack.contents }}
 
-  let pop n st = {st with stack = st_pop n st.stack}
+  let pop n st = {st with stack = {st.stack with
+                                   contents = st_pop n st.stack.contents}}
 
-  let acc n st = {st with accu = List.nth st.stack n}
+  let acc n st = {st with accu = List.nth st.stack.contents n}
 
   let env_acc n st = {st with accu = st.env.(st.env_offset + n)}
 
   let accu st = elt_to_var st.accu
 
+  let alloc_stack st hv hexn heff =
+    let x, st = fresh_var st in
+    let st =
+      { st with suspended_stacks =
+                  VarMap.add x
+                    { var = x;
+                      contents = [];
+                      handle_value = Some hv;
+                      handle_exception = Some hexn;
+                      handle_effect = Some heff;
+                      parent = None;
+                    }
+                    st.suspended_stacks } in
+    x, st
+
+  let switch_stack st stack =
+    let oldstack = st.stack in
+    let newstack = VarMap.find stack st.suspended_stacks in
+    { st with suspended_stacks =
+                st.suspended_stacks
+                |> VarMap.remove newstack.var
+                |> VarMap.add oldstack.var oldstack;
+              stack = newstack }
+
   let stack_vars st =
     List.fold_left
       (fun l e -> match e with Var x -> x :: l | Dummy -> l)
-      [] (st.accu :: st.stack)
+      [] (st.accu :: st.stack.contents)
 
   let set_accu st x = {st with accu = Var x}
 
   let clear_accu st = {st with accu = Dummy}
 
-  let peek n st = elt_to_var (List.nth st.stack n)
+  let peek n st = elt_to_var (List.nth st.stack.contents n)
 
-  let grab n st = (List.map elt_to_var (list_start n st.stack), pop n st)
+  let grab n st =
+    (List.map elt_to_var (list_start n st.stack.contents), pop n st)
 
   let rec st_assign s n x =
     match s with
@@ -498,14 +537,15 @@ module State = struct
       if n = 0 then x :: rem else y :: st_assign rem (n - 1) x
 
   let assign st n =
-    {st with stack = st_assign st.stack n st.accu }
+    {st with stack = {st.stack with
+                      contents = st_assign st.stack.contents n st.accu }}
 
   let start_function state env offset =
-    {state with accu = Dummy; stack = []; env = env; env_offset = offset;
-                handlers = []}
+    {state with accu = Dummy; stack = {state.stack with contents = []};
+                env = env; env_offset = offset; handlers = []}
 
   let start_block state =
-    let stack =
+    let contents =
       List.fold_right
         (fun e stack ->
            match e with
@@ -515,9 +555,9 @@ module State = struct
              let y = Var.fresh () in
              Var.propagate_name x y;
              Var y :: stack)
-        state.stack []
+        state.stack.contents []
     in
-    let state = { state with stack = stack } in
+    let state = { state with stack = { state.stack with contents } } in
     match state.accu with
       Dummy -> state
     | Var x ->
@@ -527,7 +567,8 @@ module State = struct
 
   let push_handler state x addr =
     { state
-      with handlers = (x, addr, List.length state.stack) :: state.handlers }
+      with handlers = (x, addr, List.length state.stack.contents)
+                      :: state.handlers }
 
   let pop_handler state =
     { state with handlers = List.tl state.handlers }
@@ -540,18 +581,32 @@ module State = struct
       let state =
         { state
           with accu = Var x;
-               stack = st_pop (List.length state.stack - len) state.stack}
+               stack = { state.stack
+                         with contents =
+                                st_pop
+                                  (List.length state.stack.contents - len)
+                                  state.stack.contents} }
       in
       Some (x, (addr, stack_vars state))
 
   let initial g =
-    { accu = Dummy; stack = []; env = [||]; env_offset = 0; handlers = [];
+    let x = Var.fresh () in
+    { accu = Dummy;
+      stack = { var = x;
+                contents = [];
+                handle_value = None;
+                handle_exception = None;
+                handle_effect = None;
+                parent = None
+              };
+      suspended_stacks = VarMap.empty;
+      env = [||]; env_offset = 0; handlers = [];
       globals = g }
 
-  let rec print_stack f l =
+  let rec print_stack_contents f l =
     match l with
       [] -> ()
-    | v :: r -> Format.fprintf f "%a %a" print_elt v print_stack r
+    | v :: r -> Format.fprintf f "%a %a" print_elt v print_stack_contents r
 
   let print_env f e =
     Array.iteri
@@ -561,7 +616,8 @@ module State = struct
 
   let print st =
     Format.eprintf "{ %a | %a | (%d) %a }@."
-      print_elt st.accu print_stack st.stack st.env_offset print_env st.env
+      print_elt st.accu print_stack_contents st.stack.contents
+      st.env_offset print_env st.env
 
   let rec name_rec i l s =
     match l, s with
@@ -574,7 +630,7 @@ module State = struct
     | _ ->
       assert false
 
-  let name_vars st l = name_rec 0 l st.stack
+  let name_vars st l = name_rec 0 l st.stack.contents
 
   let rec make_stack i state =
     if i = 0
@@ -670,7 +726,7 @@ let rec compile_block blocks debug code pc state =
           (fun (pc', _) -> compile_block blocks debug code pc' state') l1;
         Array.iter
           (fun (pc', _) -> compile_block blocks debug code pc' state') l2
-      | Pushtrap _ | Raise _ | Return _ | Stop ->
+      | Pushtrap _ | Raise _ | Return _ | Stop | Resume _ | Perform _ | Delegate _ ->
         ()
     end
   end
@@ -785,7 +841,10 @@ and compile infos pc state instrs =
     | PUSH_RETADDR ->
       compile infos (pc + 2)
         {state with State.stack =
-                      State.Dummy :: State.Dummy :: State.Dummy :: state.State.stack}
+                      {state.State.stack
+                       with State.contents =
+                              State.Dummy :: State.Dummy :: State.Dummy
+                              :: state.State.stack.State.contents}}
         instrs
     | APPLY ->
       let n = getu code (pc + 1) in
@@ -1086,27 +1145,27 @@ and compile infos pc state instrs =
       end;
       compile infos (pc + 2) state
         (Let (x, Block (254, Array.of_list contents)) :: instrs)
-    | GETFIELD0 ->
+    | GETFIELD0 | GETMUTABLEFIELD0 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[0]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 0)) :: instrs)
-    | GETFIELD1 ->
+    | GETFIELD1 | GETMUTABLEFIELD1 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[1]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 1)) :: instrs)
-    | GETFIELD2 ->
+    | GETFIELD2 | GETMUTABLEFIELD2 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[2]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 2)) :: instrs)
-    | GETFIELD3 ->
+    | GETFIELD3 | GETMUTABLEFIELD3 ->
       let y = State.accu state in
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = %a[3]@." Var.print x Var.print y;
       compile infos (pc + 1) state (Let (x, Field (y, 3)) :: instrs)
-    | GETFIELD ->
+    | GETFIELD | GETMUTABLEFIELD ->
       let y = State.accu state in
       let n = getu code (pc + 1) in
       let (x, state) = State.fresh_var state in
@@ -1262,8 +1321,10 @@ and compile infos pc state instrs =
       compile_block infos.blocks infos.debug code (pc + 2)
         {(State.push_handler state x addr)
          with State.stack =
-                State.Dummy :: State.Dummy :: State.Dummy :: State.Dummy ::
-                state.State.stack};
+                {state.State.stack
+                 with State.contents =
+                        State.Dummy :: State.Dummy :: State.Dummy :: State.Dummy ::
+                        state.State.stack.State.contents}};
       (instrs,
        Pushtrap ((pc + 2, State.stack_vars state), x,
                  (addr, State.stack_vars state'), -1), state)
@@ -1306,11 +1367,21 @@ and compile infos pc state instrs =
       let y = State.accu state in
       let z = State.peek 0 state in
       let t = State.peek 1 state in
-      let (x, state) = State.fresh_var state in
-      if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
-          Var.print x prim Var.print y Var.print z Var.print t;
-      compile infos (pc + 2) (State.pop 2 state)
-        (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
+
+      if prim = "caml_alloc_stack" then begin
+        let (x, state) = State.alloc_stack state y z t in
+        if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
+            Var.print x prim Var.print y Var.print z Var.print t;
+        compile infos (pc + 2) (State.pop 2 state)
+          (Let (x, Prim (Alloc_stack, [Pv y; Pv z; Pv t])) :: instrs)
+
+      end else begin
+        let (x, state) = State.fresh_var state in
+        if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
+            Var.print x prim Var.print y Var.print z Var.print t;
+        compile infos (pc + 2) (State.pop 2 state)
+          (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
+      end
     | C_CALL4 ->
       let nargs = 4 in
       let prim = primitive_name state (getu code (pc + 1)) in
@@ -1664,6 +1735,35 @@ and compile infos pc state instrs =
          Let (meths, Field (obj, 0)) :: instrs)
     | STOP ->
       (instrs, Stop, state)
+    | RESUME ->
+      let stack = State.accu state in
+      let func = State.peek 0 state in
+      let arg = State.peek 1 state in
+      let state = State.pop 2 state in
+      let (ret, state) = State.fresh_var state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs,
+       Resume (ret, (stack, func, arg), Some (pc + 1, State.stack_vars state)),
+       state)
+    | RESUMETERM ->
+      let stack = State.accu state in
+      let func = State.peek 0 state in
+      let arg = State.peek 1 state in
+      let state = State.pop 2 state in
+      let (ret, state) = State.fresh_var state in
+      (instrs,
+       Resume (ret, (stack, func, arg), None),
+       state)
+    | PERFORM ->
+      let eff = State.accu state in
+      let (ret, state) = State.fresh_var state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs, Perform (ret, eff, (pc + 1, State.stack_vars state)), state)
+    | DELEGATETERM ->
+      let eff = State.accu state in
+      let stack = State.peek 0 state in
+      let state = State.pop 2 state in
+      (instrs, Delegate (eff, stack), state)
     | EVENT
     | BREAK
     | FIRST_UNIMPLEMENTED_OP -> assert false
@@ -1682,9 +1782,10 @@ let (>>) x f = f x
 let fold_children blocks pc f accu =
   let block = AddrMap.find pc blocks in
   match block.branch with
-    Return _ | Raise _ | Stop ->
+    Return _ | Raise _ | Stop | Resume (_, _, None) | Delegate _ ->
     accu
-  | Branch (pc', _) | Poptrap (pc', _) ->
+  | Branch (pc', _) | Poptrap (pc', _)
+  | Resume (_, _, Some (pc', _)) | Perform (_, _, (pc', _)) ->
     f pc' accu
   | Cond (_, _, (pc1, _), (pc2, _)) | Pushtrap ((pc1, _), _, (pc2, _), _) ->
     f pc1 accu >> f pc1 >> f pc2
