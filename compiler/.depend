@@ -24,15 +24,18 @@ driver.cmo : varPrinter.cmi util.cmi tailcall.cmi specialize_js.cmi \
     specialize.cmi reserved.cmi pretty_print.cmi phisimpl.cmi \
     parse_bytecode.cmi option.cmi linker.cmi jsoo_primitive.cmi \
     jsoo_deadcode.cmi js_traverse.cmi js_output.cmi js_assign.cmi \
-    javascript.cmi inline.cmi generate.cmi flow.cmi eval.cmi \
+    javascript.cmi inline.cmi generate.cmi flow.cmi eval.cmi effects.cmi \
     compiler_version.cmi code.cmi driver.cmi
 driver.cmx : varPrinter.cmx util.cmx tailcall.cmx specialize_js.cmx \
     specialize.cmx reserved.cmx pretty_print.cmx phisimpl.cmx \
     parse_bytecode.cmx option.cmx linker.cmx jsoo_primitive.cmx \
     jsoo_deadcode.cmx js_traverse.cmx js_output.cmx js_assign.cmx \
-    javascript.cmx inline.cmx generate.cmx flow.cmx eval.cmx \
+    javascript.cmx inline.cmx generate.cmx flow.cmx eval.cmx effects.cmx \
     compiler_version.cmx code.cmx driver.cmi
 driver.cmi : source_map.cmi pretty_print.cmi parse_bytecode.cmi code.cmi
+effects.cmo : code.cmi effects.cmi
+effects.cmx : code.cmx effects.cmi
+effects.cmi : code.cmi
 eval.cmo : jsoo_primitive.cmi flow.cmi code.cmi eval.cmi
 eval.cmx : jsoo_primitive.cmx flow.cmx code.cmx eval.cmi
 eval.cmi : flow.cmi code.cmi

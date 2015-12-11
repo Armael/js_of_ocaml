@@ -48,6 +48,8 @@ let is_undefined d = match d with Phi s -> VarSet.is_empty s | _ -> false
 
 let add_expr_def defs x e =
   let idx = Var.idx x in
+  (* Var.print Format.err_formatter x; *)
+  (* Format.fprintf Format.err_formatter "\n%!"; *)
   assert (is_undefined defs.(idx));
   defs.(idx) <- Expr e
 
@@ -56,7 +58,8 @@ let add_assign_def vars defs x y =
   let idx = Var.idx x in
   match defs.(idx) with
     Expr _ | Param ->
-      assert false
+    Format.eprintf ">> v%d\n%!" idx;
+    assert false
   | Phi s  ->
       defs.(idx) <- Phi (VarSet.add y s)
 

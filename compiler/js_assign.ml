@@ -291,6 +291,10 @@ let program p =
       coloring#block [];
       if S.cardinal (coloring#get_free) <> 0
       then begin
+        Code.VarSet.iter (fun v ->
+          Format.fprintf Format.err_formatter "%a " Var.print v
+        ) (coloring#get_free);
+        Format.fprintf Format.err_formatter "\n%!";
         Util.failwith_ "Some variables escaped (#%d)" (S.cardinal (coloring#get_free))
         (* S.iter(fun s -> (Format.eprintf "%s@." (Code.Var.to_string s))) coloring#get_free *)
       end;

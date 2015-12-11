@@ -36,6 +36,9 @@ let deadcode p =
   let r,_ = deadcode' p
   in r
 
+(* let no_deadcode p = *)
+(*   p, Array.make (Code.Var.count ()) 1 *)
+
 let inline p =
   if Option.Optim.inline () && Option.Optim.deadcode ()
   then
@@ -96,6 +99,8 @@ let rec loop max name round i (p : 'a) : 'a =
 let identity x = x
 
 (* o1 *)
+
+let o0 : 'a -> 'a = print
 
 let o1 : 'a -> 'a=
   print >>
@@ -427,9 +432,30 @@ type profile = Code.program -> Code.program
 
 let f ?(standalone=true) ?(wrap_with_fun=false) ?(profile=o1) ?toplevel ?linkall ?source_map formatter d =
   configure formatter >>
+  (* print >> *)
+  Effects.f >>
   profile >>
   deadcode' >>
+  (* (fun (p, a) -> let fv = Freevars.f p in *)
+  (*   Code.AddrMap.iter *)
+  (*     (fun pc fv -> if Code.VarSet.cardinal fv > 0 then *)
+  (*         Format.eprintf ">> %d: %d@." pc (Code.VarSet.cardinal fv)) *)
+  (*     fv; *)
+  (*   Format.eprintf " <<\n%!"; *)
+  (*   (p, a)) >> *)
+
   generate d ?toplevel >>
+  (fun p ->
+     let fv = new Js_traverse.free in
+     let _ = fv#program p in
+     Code.VarSet.iter (fun v ->
+       Format.fprintf Format.err_formatter "%a " Code.Var.print v
+     ) (fv#get_free);
+     Format.fprintf Format.err_formatter "<<\n%!";
+     p) >>
+  (fun p ->
+     Js_output.program (Pretty_print.to_out_channel stdout) p;
+     p) >>
 
   link ~standalone ?linkall >>
 
@@ -446,7 +472,8 @@ let from_string prims s formatter =
   f ~standalone:false ~wrap_with_fun:true formatter d p
 
 
-let profiles = [1,o1;
+let profiles = [0,o0;
+                1,o1;
                 2,o2;
                 3,o3]
 let profile i =

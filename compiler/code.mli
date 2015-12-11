@@ -85,7 +85,6 @@ type prim =
   | Extern of string
   | Not | IsInt
   | Eq | Neq | Lt | Le | Ult
-  | Alloc_stack
 
 type constant =
     String of string
@@ -131,6 +130,7 @@ type last =
   | Resume of Var.t * (Var.t * Var.t * Var.t) * cont option
   | Perform of Var.t * Var.t * cont
   | Delegate of Var.t * Var.t
+  | LastApply of Var.t * (Var.t * Var.t list * bool) * cont option
 
 type block =
   { params : Var.t list;

@@ -119,16 +119,20 @@ let rec filter_args st pl al =
         filter_args st pl al
   | [], _ ->
       []
-  | _ ->
+  | l, [] ->
+      List.iter (fun v -> Format.eprintf "v%d " (Code.Var.idx v)) l;
+      Format.eprintf "\n%!";
       assert false
 
 let filter_cont blocks st (pc, args) =
   let params = (AddrMap.find pc blocks).params in
+  (* Format.fprintf Format.err_formatter "%d\n%!" pc; *)
   (pc, filter_args st params args)
 
 let filter_closure blocks st i =
   match i with
     Let (x, Closure (l, cont)) ->
+      (* Format.fprintf Format.err_formatter "%a " Var.print x; *)
       Let (x, Closure (l, filter_cont blocks st cont))
   | _ ->
       i

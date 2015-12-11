@@ -62,14 +62,30 @@ function caml_call_gen(f, args) {
   var n = f.length;
   var argsLen = args.length;
   var d = n - argsLen;
-  if (d == 0)
+  if (d == 0) {
     return f.apply(null, args);
-  else if (d < 0)
-    return caml_call_gen(f.apply(null,
-                                 raw_array_sub(args,0,n)),
-                         raw_array_sub(args,n,argsLen - n));
-  else
-    return function (x){ return caml_call_gen(f, raw_array_append_one(args,x)); };
+  } else if (d < 0) {
+    var k = args[0];
+    var kf = args[1];
+    var rest = new Array(argsLen - n + 2);
+    rest[0] = k;
+    rest[1] = kf;
+    for(var i = n; i < argsLen; i++) rest[i-n+2] = args[i];
+    var a = new Array(n);
+    a[0] = function (x){ return caml_call_gen(x, rest); };
+    for(var i = 1; i < n; i++) a[i] = args[i];
+    return f.apply(null, a);
+  } else {
+    var k = args[0];
+    return k(function (k2, kf2, x) {
+        var a = new Array(argsLen+1);
+        a[0] = k2;
+        a[1] = kf2;
+        for(var i = 2; i < argsLen; i++) a[i] = args[i];
+        a[argsLen] = x;
+        return caml_call_gen(f, a);
+    });
+  }
 }
 
 //Provides: caml_named_values
@@ -845,7 +861,7 @@ function caml_sys_get_config () {
 }
 //Provides: caml_sys_random_seed mutable
 //Version: < 4.00
-//The function needs to return an array since OCaml 4.0...
+//The function needs to return an array since 4.0...
 function caml_sys_random_seed () {
   var x = new Date()^0xffffffff*Math.random();
   return x;
