@@ -132,7 +132,6 @@ type prim =
   | Extern of string
   | Not | IsInt
   | Eq | Neq | Lt | Le | Ult
-  | Alloc_stack
 
 type constant =
     String of string
@@ -176,6 +175,7 @@ type last =
   | Resume of Var.t * (Var.t * Var.t * Var.t) * cont option
   | Perform of Var.t * Var.t * cont
   | Delegate of Var.t * Var.t
+  | LastApply of Var.t * (Var.t * Var.t list * bool) * cont option
 
 type block =
   { params : Var.t list;
@@ -281,8 +281,6 @@ let print_prim f p l =
   | Lt,  [x; y]       -> Format.fprintf f "%a < %a" print_arg x print_arg y
   | Le,  [x; y]       -> Format.fprintf f "%a <= %a" print_arg x print_arg y
   | Ult, [x; y]       -> Format.fprintf f "%a <= %a" print_arg x print_arg y
-  | Alloc_stack, [x; y; z] ->
-    Format.fprintf f "alloc_stack(%a, %a, %a)" print_arg x print_arg y print_arg z
   | _                 -> assert false
 
 let print_expr f e =
@@ -365,6 +363,17 @@ let print_last f l =
   | Delegate (eff, stack) ->
       Format.fprintf f "delegate (%a, %a)"
         Var.print eff Var.print stack
+  | LastApply (ret, (g, l, exact), cont_opt) ->
+      let print_cont_opt f = function
+        | None -> ()
+        | Some cont -> Format.fprintf f " continuation %a" print_cont cont
+      in
+      if exact then
+        Format.fprintf f "%a = %a!(%a)%a" Var.print ret Var.print g
+          print_var_list l print_cont_opt cont_opt
+      else
+        Format.fprintf f "%a = %a(%a)%a" Var.print ret Var.print g
+          print_var_list l print_cont_opt cont_opt
 
 type xinstr = Instr of instr | Last of last
 
@@ -428,9 +437,12 @@ let fold_children blocks pc f accu =
     | None              -> accu
   in
   match block.branch with
-    Return _ | Raise _ | Stop ->
+  | Return _ | Raise _ | Stop
+  | Delegate _ | Resume (_, _, None) | LastApply (_, _, None) ->
       accu
-  | Branch (pc', _) | Poptrap (pc', _) | Pushtrap ((pc', _), _, _, _) ->
+  | Branch (pc', _) | Poptrap (pc', _) | Pushtrap ((pc', _), _, _, _)
+  | Resume (_, _, Some (pc', _)) | Perform (_, _, (pc', _))
+  | LastApply (_, _, Some (pc', _)) ->
       f pc' accu
   | Cond (_, _, (pc1, _), (pc2, _)) ->
       f pc1 accu >> f pc1 >> f pc2

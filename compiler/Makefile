@@ -23,7 +23,7 @@ lib/%: %
 
 OBJS=compiler_version.cmx \
      util.cmx pretty_print.cmx option.cmx reserved.cmx varPrinter.cmx \
-     dgraph.cmx code.cmx javascript.cmx json.cmx vlq64.cmx source_map.cmx \
+     dgraph.cmx code.cmx effects.cmx javascript.cmx json.cmx vlq64.cmx source_map.cmx \
      js_output.cmx js_simpl.cmx parse_info.cmx js_token.cmx js_parser.cmx \
      js_lexer.cmx parse_js.cmx jsoo_primitive.cmx annot_parser.cmx annot_lexer.cmx \
      instr.cmx jsoo_subst.cmx pure_fun.cmx jsoo_deadcode.cmx \

@@ -676,7 +676,8 @@ let rec compile_block blocks debug code pc state =
           (fun (pc', _) -> compile_block blocks debug code pc' state') l1;
         Array.iter
           (fun (pc', _) -> compile_block blocks debug code pc' state') l2
-      | Pushtrap _ | Raise _ | Return _ | Stop | Resume _ | Perform _ | Delegate _ ->
+      | Pushtrap _ | Raise _ | Return _ | Stop
+      | Resume _ | Perform _ | Delegate _ | LastApply _ ->
         ()
     end
   end
@@ -806,8 +807,11 @@ and compile infos pc state instrs =
         done;
         Format.printf ")@."
       end;
-      compile infos (pc + 2) (State.pop 3 state)
-        (Let (x, Apply (f, args, false)) :: instrs)
+      let state = State.pop 3 state in
+      compile_block infos.blocks infos.debug code (pc + 2) state;
+      (instrs,
+       LastApply (x, (f, args, false), Some (pc + 2, State.stack_vars state)),
+       state)
     | APPLY1 ->
       let f = State.accu state in
       let (x, state) = State.fresh_var state in
@@ -815,8 +819,11 @@ and compile infos pc state instrs =
       if debug_parser () then
         Format.printf "%a = %a(%a)@." Var.print x
           Var.print f Var.print y;
-      compile infos (pc + 1) (State.pop 1 state)
-        (Let (x, Apply (f, [y], false)) :: instrs)
+      let state = State.pop 1 state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs,
+       LastApply (x, (f, [y], false), Some (pc + 1, State.stack_vars state)),
+       state)
     | APPLY2 ->
       let f = State.accu state in
       let (x, state) = State.fresh_var state in
@@ -824,8 +831,11 @@ and compile infos pc state instrs =
       let z = State.peek 1 state in
       if debug_parser () then Format.printf "%a = %a(%a, %a)@." Var.print x
           Var.print f Var.print y Var.print z;
-      compile infos (pc + 1) (State.pop 2 state)
-        (Let (x, Apply (f, [y; z], false)) :: instrs)
+      let state = State.pop 2 state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs,
+       LastApply (x, (f, [y; z], false), Some (pc + 1, State.stack_vars state)),
+       state)
     | APPLY3 ->
       let f = State.accu state in
       let (x, state) = State.fresh_var state in
@@ -834,8 +844,11 @@ and compile infos pc state instrs =
       let t = State.peek 2 state in
       if debug_parser () then Format.printf "%a = %a(%a, %a, %a)@." Var.print x
           Var.print f Var.print y Var.print z Var.print t;
-      compile infos (pc + 1) (State.pop 3 state)
-        (Let (x, Apply (f, [y; z; t], false)) :: instrs)
+      let state = State.pop 3 state in
+      compile_block infos.blocks infos.debug code (pc + 1) state;
+      (instrs,
+       LastApply (x, (f, [y; z; t], false), Some (pc + 1, State.stack_vars state)),
+       state)
     | APPTERM ->
       let n = getu code (pc + 1) in
       let f = State.accu state in
@@ -849,13 +862,13 @@ and compile infos pc state instrs =
         Format.printf ")@."
       end;
       let (x, state) = State.fresh_var state in
-      (Let (x, Apply (f, l, false)) :: instrs, Return x, state)
+      (instrs, LastApply (x, (f, l, false), None), state)
     | APPTERM1 ->
       let f = State.accu state in
       let x = State.peek 0 state in
       if debug_parser () then Format.printf "return %a(%a)@." Var.print f Var.print x;
       let (y, state) = State.fresh_var state in
-      (Let (y, Apply (f, [x], false)) :: instrs, Return y, state)
+      (instrs, LastApply (y, (f, [x], false), None), state)
     | APPTERM2 ->
       let f = State.accu state in
       let x = State.peek 0 state in
@@ -863,7 +876,7 @@ and compile infos pc state instrs =
       if debug_parser () then Format.printf "return %a(%a, %a)@."
           Var.print f Var.print x Var.print y;
       let (z, state) = State.fresh_var state in
-      (Let (z, Apply (f, [x; y], false)) :: instrs, Return z, state)
+      (instrs, LastApply (z, (f, [x; y], false), None), state)
     | APPTERM3 ->
       let f = State.accu state in
       let x = State.peek 0 state in
@@ -872,7 +885,7 @@ and compile infos pc state instrs =
       if debug_parser () then Format.printf "return %a(%a, %a, %a)@."
           Var.print f Var.print x Var.print y Var.print z;
       let (t, state) = State.fresh_var state in
-      (Let (t, Apply (f, [x; y; z], false)) :: instrs, Return t, state)
+      (instrs, LastApply (t, (f, [x; y; z], false), None), state)
     | RETURN ->
       let x = State.accu state in
       if debug_parser () then Format.printf "return %a@." Var.print x;
@@ -1315,15 +1328,8 @@ and compile infos pc state instrs =
       let (x, state) = State.fresh_var state in
       if debug_parser () then Format.printf "%a = ccall \"%s\" (%a, %a, %a)@."
           Var.print x prim Var.print y Var.print z Var.print t;
-
-      if prim = "caml_alloc_stack" then begin
-        compile infos (pc + 2) (State.pop 2 state)
-          (Let (x, Prim (Alloc_stack, [Pv y; Pv z; Pv t])) :: instrs)
-
-      end else begin
-        compile infos (pc + 2) (State.pop 2 state)
-          (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
-      end
+      compile infos (pc + 2) (State.pop 2 state)
+        (Let (x, Prim (Extern prim, [Pv y; Pv z; Pv t])) :: instrs)
     | C_CALL4 ->
       let nargs = 4 in
       let prim = primitive_name state (getu code (pc + 1)) in
@@ -1724,10 +1730,12 @@ let (>>) x f = f x
 let fold_children blocks pc f accu =
   let block = AddrMap.find pc blocks in
   match block.branch with
-    Return _ | Raise _ | Stop | Resume (_, _, None) | Delegate _ ->
+  | Return _ | Raise _ | Stop
+  | Resume (_, _, None) | Delegate _ | LastApply (_, _, None) ->
     accu
   | Branch (pc', _) | Poptrap (pc', _)
-  | Resume (_, _, Some (pc', _)) | Perform (_, _, (pc', _)) ->
+  | Resume (_, _, Some (pc', _)) | Perform (_, _, (pc', _))
+  | LastApply (_, _, Some (pc', _)) ->
     f pc' accu
   | Cond (_, _, (pc1, _), (pc2, _)) | Pushtrap ((pc1, _), _, (pc2, _), _) ->
     f pc1 accu >> f pc1 >> f pc2

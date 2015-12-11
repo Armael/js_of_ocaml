@@ -99,7 +99,9 @@ module Make(D : sig
   let ident f = function
     | S {name;var=None} -> PP.string f name
     | S {name;var=Some _v} -> PP.string f name
-    | V _v -> assert false
+    | V _v -> (* assert false *)
+      let name = Printf.sprintf "v%d" (Code.Var.idx _v) in
+      PP.string f name
 
   let opt_identifier f i =
     match i with
