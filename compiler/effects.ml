@@ -51,7 +51,7 @@ let alloc_stack_k hv k kf =
   let v, ret = Var.fresh (), Var.fresh () in
   { params = [v];
     handler = None;
-    body = [Let (ret, Apply (hv, [v; k; kf], true))];
+    body = [Let (ret, Apply (hv, [k; kf; v], true))];
     branch = Return ret;
   }
 
@@ -59,7 +59,7 @@ let alloc_stack_kf hf k kf =
   let v, v', ret = Var.fresh (), Var.fresh (), Var.fresh () in
   { params = [v; v'];
     handler = None;
-    body = [Let (ret, Apply (hf, [v; v'; k; kf], true))];
+    body = [Let (ret, Apply (hf, [k; kf; v; v'], true))];
     branch = Return ret;
   }
 
@@ -67,7 +67,7 @@ let alloc_stack k kf =
   let f, x, ret = Var.fresh (), Var.fresh (), Var.fresh () in
   { params = [f; x];
     handler = None;
-    body = [Let (ret, Apply (f, [x; k; kf], true))];
+    body = [Let (ret, Apply (f, [k; kf; x], true))];
     branch = Return ret;
   }
 
@@ -98,13 +98,6 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
     [], Branch (cps_cont cont)
   in
 
-  let cps_last_apply ret (f, args, full) cont_opt =
-    [Let (ret, Apply (f, args, full))] @>
-    begin match cont_opt with
-      | None -> cps_return ret
-      | Some cont -> cps_branch cont
-    end in
-    
   match last with
   | Return x ->
     cps_return x
@@ -127,13 +120,12 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
     (* TODO *)
     [], Poptrap (cps_cont cont)
   | Resume (ret, (stack, func, args), cont_opt) ->
+    [Let (ret, Apply (stack, [func; args], true))] @>
     begin match cont_opt with
       | None ->
-        let kret = Var.fresh () in
-        [Let (ret, Apply (stack, [func; args], true))] @>
-        cps_last_apply kret (k, [ret], true) cont_opt
+        cps_return ret
       | Some cont ->
-        cps_last_apply ret (stack, [func; args], true) cont_opt
+        cps_branch cont
     end
   | Perform (ret, eff, cont) ->
     let cur_k, cur_stack = fresh2 () in
@@ -142,13 +134,26 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
     let cur_k_closure = closure_of_cont new_blocks [ret] (cps_cont cont) in
     let stack = add_block new_blocks (alloc_stack cur_k kf) in
     [Let (cur_k, cur_k_closure);
-     Let (cur_stack, Closure ([f; v], (stack, [f; v])))] @>
-    cps_last_apply kfret (kf, [eff; cur_stack], true) None
+     Let (cur_stack, Closure ([f; v], (stack, [f; v])));
+     Let (kfret, Apply (kf, [eff; cur_stack], true))],
+    Return kfret
   | Delegate (eff, stack) ->
     let kfret = Var.fresh () in
-    cps_last_apply kfret (kf, [eff; stack], true) None
+    [Let (kfret, Apply (kf, [eff; stack], true))],
+    Return kfret
   | LastApply (ret, (f, args, full), cont_opt) ->
-    cps_last_apply ret (f, k :: kf :: args, full) cont_opt
+    begin match cont_opt with
+      | None ->
+        [Let (ret, Apply (f, k :: kf :: args, full))],
+        Return ret
+      | Some cont ->
+        let cur_k = Var.fresh () in
+        let cur_k_closure = closure_of_cont new_blocks [ret] (cps_cont cont) in
+        let ret' = Var.fresh () in
+        [Let (cur_k, cur_k_closure);
+         Let (ret', Apply (f, cur_k :: kf :: args, full))],
+        Return ret'
+    end
 
 let cps_instr new_blocks (kf: Var.t) (instr: instr): instr list =
   match instr with
@@ -156,7 +161,7 @@ let cps_instr new_blocks (kf: Var.t) (instr: instr): instr list =
     (* TODO [he] *)
     cps_alloc_stack new_blocks x kf hv hf
   | Let (x, Prim (Extern "caml_bvar_create", [Pv y]))
-  | Let (x, Prim (Extern "caml_bvar take", [Pv y])) ->
+  | Let (x, Prim (Extern "caml_bvar_take", [Pv y])) ->
     (* TODO *)
     let id, v = fresh2 () in
     let id_addr = add_block new_blocks (identity ()) in
