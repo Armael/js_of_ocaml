@@ -190,6 +190,24 @@ let cps_blocks new_blocks blocks =
       branch = last }
   ) blocks
 
+let nop_block block =
+  let nop_last = function
+    | LastApply (ret, (f, args, full), cont_opt) ->
+      [Let (ret, Apply (f, args, full))],
+      begin match cont_opt with
+        | None -> Return ret
+        | Some cont -> Branch cont
+      end
+    | last -> [], last in
+  let add_instr, branch = nop_last block.branch in
+  { block with
+    branch;
+    body = block.body @ add_instr }
+
+let nop (start, blocks, free_pc) =
+  let blocks = AddrMap.map nop_block blocks in
+  (start, blocks, free_pc)
+
 let f ((start, blocks, free_pc): Code.program): Code.program =
   let new_blocks = ref (AddrMap.empty, free_pc) in
   
