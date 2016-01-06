@@ -1,4 +1,118 @@
+open Util
 open Code
+
+type graph = {
+  root  : AddrSet.elt;
+  succs : AddrSet.t IntMap.t;
+  backs : AddrSet.t IntMap.t;
+  preds : AddrSet.t IntMap.t;
+}
+
+let get_values k map =
+  try IntMap.find k map with Not_found -> AddrSet.empty
+  
+let add_value k v map =
+  let vs = get_values k map in
+  IntMap.add k (AddrSet.add v vs) map
+
+let build_graph (blocks: block AddrMap.t) (pc: AddrSet.elt): graph =
+  let rec loop (g: graph) (pc: AddrSet.elt) (visited: AddrSet.t) (anc: AddrSet.t) =
+    if not (AddrSet.mem pc visited) then begin
+      let visited = AddrSet.add pc visited in
+      let anc = AddrSet.add pc anc in
+      let s = Code.fold_children blocks pc AddrSet.add AddrSet.empty in
+      let backs = AddrSet.inter s anc in
+
+      let succs = AddrSet.filter (fun pc -> not (AddrSet.mem pc anc)) s in
+      let preds = AddrSet.fold (fun succ preds -> add_value succ pc preds)
+          succs g.preds in
+
+      let g = { g with
+                backs = AddrMap.add pc backs g.backs;
+                succs = AddrMap.add pc succs g.succs;
+                preds; } in
+      AddrSet.fold (fun pc' (g, visited) -> loop g pc' visited anc)
+        succs (g, visited)
+    end else (g, visited)
+  in
+
+  let (g, _) =
+    loop { root = pc;
+           succs = IntMap.empty; backs = IntMap.empty; preds = IntMap.empty }
+      pc AddrSet.empty AddrSet.empty in
+  g
+
+let print_graph (g: graph) =
+  Printf.eprintf "digraph G {\n";
+  IntMap.iter (fun k s ->
+    AddrSet.iter (fun v ->
+      Printf.eprintf "%d -> %d;\n" k v
+    ) s
+  ) g.succs;
+
+  IntMap.iter (fun k s ->
+    AddrSet.iter (fun v ->
+      Printf.eprintf "%d -> %d [style=dashed,color=red];\n" k v
+    ) s
+  ) g.backs;
+
+   (* IntMap.iter (fun k s -> *)
+   (*   AddrSet.iter (fun v -> *)
+   (*     Printf.eprintf "%d -> %d [style=dashed,color=blue];\n" k v *)
+   (*   ) s *)
+   (* ) g.preds; *)
+
+   Printf.eprintf "}\n"
+
+let dominated_by_node (g: graph): AddrSet.t IntMap.t =
+  let explore_avoiding v =
+    let rec loop node visited =
+      let visited = AddrSet.add node visited in
+      try
+        let succs = IntMap.find node g.succs |> AddrSet.filter ((<>) v) in
+        AddrSet.fold loop succs visited
+      with Not_found ->
+        visited
+    in
+    loop g.root AddrSet.empty
+  in
+
+  let all_nodes =
+    IntMap.fold (fun v _ s -> AddrSet.add v s)
+      g.preds (AddrSet.singleton g.root) in
+
+  IntMap.fold (fun v _ dominated_by ->
+    let not_dominated = explore_avoiding v in
+    IntMap.fold (fun v' _ dominated_by ->
+      if not (AddrSet.mem v' not_dominated) then
+        add_value v v' dominated_by
+      else
+        dominated_by
+    ) g.preds dominated_by
+  ) g.preds (IntMap.singleton g.root all_nodes)
+
+let immediate_dominator_of_node (g: graph): AddrSet.elt IntMap.t =
+  let dominated_by = dominated_by_node g in
+  let dom_by node = get_values node dominated_by in
+
+  let rec loop node (idom: AddrSet.elt IntMap.t) =
+    let dom = dom_by node |> AddrSet.remove node in
+    let dom_dom =
+      AddrSet.fold
+        (fun node' dom_dom ->
+           dom_by node'
+           |> AddrSet.remove node'
+           |> AddrSet.union dom_dom)
+        dom AddrSet.empty
+    in
+    let idom_node = AddrSet.diff dom dom_dom in
+    let idom = AddrSet.fold (fun node' idom ->
+      IntMap.add node' node idom) idom_node idom in
+    AddrSet.fold loop idom_node idom
+  in
+  loop g.root IntMap.empty
+
+(******************************************************************************)
 
 let fresh2 () = Var.fresh (), Var.fresh ()
 let fresh3 () = Var.fresh (), Var.fresh (), Var.fresh ()
@@ -206,6 +320,19 @@ let nop_block block =
 
 let nop (start, blocks, free_pc) =
   let blocks = AddrMap.map nop_block blocks in
+
+  let g = build_graph blocks start in
+  print_graph g;
+
+  Printf.eprintf "\nidom:\n";
+
+  let idom = immediate_dominator_of_node g in
+  IntMap.iter (fun node dom ->
+    Printf.eprintf "%d -> %d\n" node dom;
+  ) idom;
+
+  Printf.eprintf "\n";
+  
   (start, blocks, free_pc)
 
 let f ((start, blocks, free_pc): Code.program): Code.program =
