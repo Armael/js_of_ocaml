@@ -2,7 +2,7 @@ open Util
 open Code
 
 type graph = {
-  root  : AddrSet.elt;
+  root  : addr;
   succs : AddrSet.t IntMap.t;
   backs : AddrSet.t IntMap.t;
   preds : AddrSet.t IntMap.t;
@@ -15,8 +15,8 @@ let add_value k v map =
   let vs = get_values k map in
   IntMap.add k (AddrSet.add v vs) map
 
-let build_graph (blocks: block AddrMap.t) (pc: AddrSet.elt): graph =
-  let rec loop (g: graph) (pc: AddrSet.elt) (visited: AddrSet.t) (anc: AddrSet.t) =
+let build_graph (blocks: block AddrMap.t) (pc: addr): graph =
+  let rec loop (g: graph) (pc: addr) (visited: AddrSet.t) (anc: AddrSet.t) =
     if not (AddrSet.mem pc visited) then begin
       let visited = AddrSet.add pc visited in
       let anc = AddrSet.add pc anc in
@@ -91,11 +91,11 @@ let dominated_by_node (g: graph): AddrSet.t IntMap.t =
     ) g.preds dominated_by
   ) g.preds (IntMap.singleton g.root all_nodes)
 
-let immediate_dominator_of_node (g: graph): AddrSet.elt IntMap.t =
+let immediate_dominator_of_node (g: graph): addr IntMap.t =
   let dominated_by = dominated_by_node g in
   let dom_by node = get_values node dominated_by in
 
-  let rec loop node (idom: AddrSet.elt IntMap.t) =
+  let rec loop node (idom: addr IntMap.t) =
     let dom = dom_by node |> AddrSet.remove node in
     let dom_dom =
       AddrSet.fold
@@ -112,13 +112,25 @@ let immediate_dominator_of_node (g: graph): AddrSet.elt IntMap.t =
   in
   loop g.root IntMap.empty
 
-let jump_closures (g: graph): Var.t IntMap.t =
-  IntMap.fold (fun node preds c_names ->
-    if AddrSet.cardinal preds >= 2 then
-      IntMap.add node (Var.fresh ()) c_names
-    else
-      c_names
-  ) g.preds IntMap.empty
+type jump_closures = {
+  closure_of_jump : Var.t IntMap.t;
+  closure_of_alloc_site : (Var.t * addr) IntMap.t;
+}
+
+let jump_closures (g: graph): jump_closures =
+  let idom = immediate_dominator_of_node g in
+  let closure_of_jump, closure_of_alloc_site =
+    IntMap.fold (fun node preds (c_o_b, c_o_a_s) ->
+      if AddrSet.cardinal preds >= 2 then
+        let cname = Var.fresh () in
+        let idom_node = IntMap.find node idom in
+        (IntMap.add node cname c_o_b,
+         IntMap.add idom_node (cname, node) c_o_a_s)
+      else
+        (c_o_b, c_o_a_s)
+    ) g.preds (IntMap.empty, IntMap.empty) in
+
+  { closure_of_jump; closure_of_alloc_site }
 
 (******************************************************************************)
 
@@ -297,20 +309,31 @@ let cps_instr new_blocks (kf: Var.t) (instr: instr): instr list =
   | _ ->
     [instr]
 
-let cps_blocks new_blocks blocks =
-  AddrMap.map (fun block ->
-    let k, kf = fresh2 () in
-    let instrs, last = cps_last new_blocks k kf block.branch in
-    let handler = match block.handler with
-      | None -> None
-      | Some (v, (addr, params)) -> Some (v, (addr, k::kf::params)) in
-    { params = k :: kf :: block.params;
-      handler;
-      body = (List.map (cps_instr new_blocks kf) block.body
-              |> List.flatten)
-             @ instrs;
-      branch = last }
-  ) blocks
+let cps_block new_blocks jc blocks block_addr block =
+  let k, kf = fresh2 () in
+  let last_instrs, last = cps_last new_blocks k kf block.branch in
+  let handler = match block.handler with
+    | None -> None
+    | Some (v, (addr, params)) -> Some (v, (addr, k::kf::params)) in
+
+  let alloc_jump_closure =
+    try
+      let cname, jump_addr = IntMap.find block_addr jc.closure_of_alloc_site in
+      
+      
+
+  let body =
+    (List.map (cps_instr new_blocks kf) block.body
+     |> List.flatten)
+    @ last_instrs in
+  
+  { params = k :: kf :: block.params;
+    handler;
+    body;
+    branch = last }
+
+let cps_blocks new_blocks jc blocks =
+  AddrMap.mapi (cps_block new_blocks jc blocks) blocks
 
 let nop_block block =
   let nop_last = function
@@ -344,8 +367,9 @@ let nop (start, blocks, free_pc) =
 
 let f ((start, blocks, free_pc): Code.program): Code.program =
   let new_blocks = ref (AddrMap.empty, free_pc) in
-  
-  let blocks = cps_blocks new_blocks blocks in
+
+  let jc = jump_closures blocks in
+  let blocks = cps_blocks new_blocks jc blocks in
   let k, kf = fresh2 () in
   let v1, v2, v3 = fresh3 () in
   let toplevel_k_addr = add_block new_blocks (toplevel_k ()) in
