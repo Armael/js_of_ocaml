@@ -112,6 +112,14 @@ let immediate_dominator_of_node (g: graph): AddrSet.elt IntMap.t =
   in
   loop g.root IntMap.empty
 
+let jump_closures (g: graph): Var.t IntMap.t =
+  IntMap.fold (fun node preds c_names ->
+    if AddrSet.cardinal preds >= 2 then
+      IntMap.add node (Var.fresh ()) c_names
+    else
+      c_names
+  ) g.preds IntMap.empty
+
 (******************************************************************************)
 
 let fresh2 () = Var.fresh (), Var.fresh ()
@@ -319,8 +327,6 @@ let nop_block block =
     body = block.body @ add_instr }
 
 let nop (start, blocks, free_pc) =
-  let blocks = AddrMap.map nop_block blocks in
-
   let g = build_graph blocks start in
   print_graph g;
 
@@ -333,6 +339,7 @@ let nop (start, blocks, free_pc) =
 
   Printf.eprintf "\n";
   
+  let blocks = AddrMap.map nop_block blocks in
   (start, blocks, free_pc)
 
 let f ((start, blocks, free_pc): Code.program): Code.program =
