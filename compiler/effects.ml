@@ -24,8 +24,12 @@ let build_graph (blocks: block AddrMap.t) (pc: addr): graph =
       let backs = AddrSet.inter s anc in
 
       let succs = AddrSet.filter (fun pc -> not (AddrSet.mem pc anc)) s in
-      let preds = AddrSet.fold (fun succ preds -> add_value succ pc preds)
-          succs g.preds in
+      let preds =
+        AddrSet.fold (fun succ preds -> add_value succ pc preds)
+          succs g.preds
+        |> AddrSet.fold (fun back preds -> add_value back pc preds)
+          backs
+      in
 
       let g = { g with
                 backs = AddrMap.add pc backs g.backs;
@@ -114,7 +118,8 @@ let immediate_dominator_of_node (g: graph): addr IntMap.t =
 
 type jump_closures = {
   closure_of_jump : Var.t IntMap.t;
-  closure_of_alloc_site : (Var.t * addr) IntMap.t;
+  closure_of_alloc_site : (Var.t * addr) list IntMap.t;
+  allocated_call_blocks : (Var.t, addr) Hashtbl.t;
 }
 
 let jump_closures (g: graph): jump_closures =
@@ -124,13 +129,19 @@ let jump_closures (g: graph): jump_closures =
       if AddrSet.cardinal preds >= 2 then
         let cname = Var.fresh () in
         let idom_node = IntMap.find node idom in
+        let closures_to_allocate =
+          try IntMap.find idom_node c_o_a_s
+          with Not_found -> [] in
+        
         (IntMap.add node cname c_o_b,
-         IntMap.add idom_node (cname, node) c_o_a_s)
+         IntMap.add idom_node ((cname, node) :: closures_to_allocate)
+           c_o_a_s)
       else
         (c_o_b, c_o_a_s)
     ) g.preds (IntMap.empty, IntMap.empty) in
 
-  { closure_of_jump; closure_of_alloc_site }
+  { closure_of_jump; closure_of_alloc_site;
+    allocated_call_blocks = Hashtbl.create 37 }
 
 (******************************************************************************)
 
@@ -148,17 +159,43 @@ let add_block new_blocks block =
   new_blocks := (AddrMap.add free_pc block blocks, free_pc + 1);
   free_pc
 
-let closure_of_cont new_blocks params cont =
+let add_call_block new_blocks jc cname params =
+  let fresh_params = List.map (fun _ -> Var.fresh ()) params in
+  let ret = Var.fresh () in
+  let addr = add_block new_blocks {
+    params = fresh_params;
+    handler = None;
+    body = [Let (ret, Apply (cname, params, false))];
+    branch = Return ret
+  } in
+  Hashtbl.add jc.allocated_call_blocks cname addr;
+  addr
+
+let cps_branch jc k kf cont =
+  let caddr = fst cont in
+  let params = k :: kf :: snd cont in
+  try
+    let cname = IntMap.find caddr jc.closure_of_jump in
+    let ret = Var.fresh () in
+    [Let (ret, Apply (cname, params, false))],
+    Return ret
+  with Not_found ->
+    [], Branch (caddr, params)
+
+let closure_of_cont new_blocks jc params k kf cont =
   let fresh_params = List.map (fun v -> (v, Var.fresh ())) params in
   let fresh_of v =
     try List.assoc v fresh_params with
-    Not_found -> v in    
+      Not_found -> v in
+
+  let body, branch =
+    cps_branch jc k kf (fst cont, List.map fresh_of (snd cont))
+  in
 
   let addr = add_block new_blocks {
     params = List.map fresh_of params;
     handler = None; 
-    body = [];
-    branch = Branch (fst cont, List.map fresh_of (snd cont));
+    body; branch;
   } in
   Closure (params, (addr, params))
 
@@ -220,17 +257,33 @@ let cps_alloc_stack
    Let (stack_kf, Closure ([v3; v4], (stack_kf_addr, [v3; v4])));
    Let (ret, Closure ([f; v5], (stack_addr, [f; v5])))]
 
-let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
+let cps_last new_blocks jc (k: Var.t) (kf: Var.t) (last: last): instr list * last =
   let (@>) instrs1 (instrs2, last) = (instrs1 @ instrs2, last) in
   let cps_cont (pc, args) = (pc, k :: kf :: args) in
+  let cps_jump_cont (pc, args) =
+    let args = k :: kf :: args in
+    try
+      let cname = IntMap.find pc jc.closure_of_jump in
+      begin
+        let call_block =
+          try Hashtbl.find jc.allocated_call_blocks cname
+          with Not_found ->
+            add_call_block new_blocks jc cname args
+        in
+        (call_block, args)
+      end
+    with Not_found ->
+      (pc, args)
+  in
+  
   let cps_return x =
     let kret = Var.fresh () in
     [Let (kret, Apply (k, [x], true))],
     Return kret
   in
-  let cps_branch cont =
-    [], Branch (cps_cont cont)
-  in
+
+  let cps_branch = cps_branch jc k kf in
+  let closure_of_cont params = closure_of_cont new_blocks jc params k kf in
 
   match last with
   | Return x ->
@@ -244,9 +297,9 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
   | Branch cont ->
     cps_branch cont
   | Cond (cond, x, cont1, cont2) ->
-    [], Cond (cond, x, cps_cont cont1, cps_cont cont2)
+    [], Cond (cond, x, cps_jump_cont cont1, cps_jump_cont cont2)
   | Switch (x, c1, c2) ->
-    [], Switch (x, Array.map cps_cont c1, Array.map cps_cont c2)
+    [], Switch (x, Array.map cps_jump_cont c1, Array.map cps_jump_cont c2)
   | Pushtrap (cont1, x, cont2, pc) ->
     (* TODO *)
     [], Pushtrap (cps_cont cont1, x, cps_cont cont2, pc)
@@ -265,7 +318,7 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
     let cur_k, cur_stack = fresh2 () in
     let f, v = fresh2 () in
     let kfret = Var.fresh () in
-    let cur_k_closure = closure_of_cont new_blocks [ret] (cps_cont cont) in
+    let cur_k_closure = closure_of_cont [ret] cont in
     let stack = add_block new_blocks (alloc_stack cur_k kf) in
     [Let (cur_k, cur_k_closure);
      Let (cur_stack, Closure ([f; v], (stack, [f; v])));
@@ -282,7 +335,7 @@ let cps_last new_blocks (k: Var.t) (kf: Var.t) (last: last): instr list * last =
         Return ret
       | Some cont ->
         let cur_k = Var.fresh () in
-        let cur_k_closure = closure_of_cont new_blocks [ret] (cps_cont cont) in
+        let cur_k_closure = closure_of_cont [ret] cont in
         let ret' = Var.fresh () in
         [Let (cur_k, cur_k_closure);
          Let (ret', Apply (f, cur_k :: kf :: args, full))],
@@ -311,20 +364,30 @@ let cps_instr new_blocks (kf: Var.t) (instr: instr): instr list =
 
 let cps_block new_blocks jc blocks block_addr block =
   let k, kf = fresh2 () in
-  let last_instrs, last = cps_last new_blocks k kf block.branch in
   let handler = match block.handler with
     | None -> None
     | Some (v, (addr, params)) -> Some (v, (addr, k::kf::params)) in
 
   let alloc_jump_closure =
     try
-      let cname, jump_addr = IntMap.find block_addr jc.closure_of_alloc_site in
-      
-      
+      let to_allocate = IntMap.find block_addr jc.closure_of_alloc_site in
+      List.map (fun (cname, jump_addr) ->
+        let jump_block = IntMap.find jump_addr blocks in
+        let k, kf = fresh2 () in
+        let fresh_params =
+          k :: kf :: List.map (fun _ -> Var.fresh ()) jump_block.params in
+        Let (cname, Closure (fresh_params, (jump_addr, fresh_params)))
+      ) to_allocate
+    with Not_found ->
+      []
+  in
+
+  let last_instrs, last = cps_last new_blocks jc k kf block.branch in
 
   let body =
     (List.map (cps_instr new_blocks kf) block.body
      |> List.flatten)
+    @ alloc_jump_closure
     @ last_instrs in
   
   { params = k :: kf :: block.params;
@@ -368,7 +431,33 @@ let nop (start, blocks, free_pc) =
 let f ((start, blocks, free_pc): Code.program): Code.program =
   let new_blocks = ref (AddrMap.empty, free_pc) in
 
-  let jc = jump_closures blocks in
+  Printf.eprintf "start: %d\n\n" start;
+  let cfg = build_graph blocks start in
+  let jc = jump_closures cfg in
+
+  print_graph cfg;
+
+  Printf.eprintf "\nidom:\n";
+
+  let idom = immediate_dominator_of_node cfg in
+  IntMap.iter (fun node dom ->
+    Printf.eprintf "%d -> %d\n" node dom;
+  ) idom;
+
+  Printf.eprintf "\n";
+
+  Printf.eprintf "Closure of alloc site:\n";
+  IntMap.iter (fun block to_allocate ->
+    List.iter (fun (cname, caddr) ->
+      Printf.eprintf "%d -> v%d, %d\n" block (Var.idx cname) caddr;
+    ) to_allocate
+  ) jc.closure_of_alloc_site;
+
+  Printf.eprintf "\nClosure of jump:\n";
+  IntMap.iter (fun block cname ->
+    Printf.eprintf "%d -> v%d\n" block (Var.idx cname);
+  ) jc.closure_of_jump;
+    
   let blocks = cps_blocks new_blocks jc blocks in
   let k, kf = fresh2 () in
   let v1, v2, v3 = fresh3 () in
