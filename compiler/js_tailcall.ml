@@ -39,6 +39,7 @@ class tailcall = object(m)
     | Return_statement (Some e) ->
       ignore(m#last_e e);
       s
+
     | _ -> s
 
   method source s =
@@ -72,6 +73,8 @@ class tailcall_rewrite f = object(m)
         | None -> s
         | Some s -> s
       end
+    | Suspended_statement thunk ->
+      thunk ()
     | _ -> s
 
   method private last_e e =
@@ -106,15 +109,15 @@ end
 
 module type TC = sig
   val rewrite :
-    (Code.Var.t * Javascript.expression * J.location * VarSet.t) list ->
-    (string -> Javascript.expression) -> Javascript.statement_list
+    (Code.Var.t * Javascript.expression * J.location * VarSet.t * VarSet.t * bool) list ->
+    (string -> Javascript.expression) -> Javascript.statement
 end
 
 module Ident : TC = struct
   let rewrite closures _get_prim =
-    [J.Variable_statement
-       (List.map (fun (name, cl, loc, _) -> J.V name, Some (cl, loc))
-          closures), J.N]
+    J.Variable_statement
+       (List.map (fun (name, cl, loc, _, _, _) -> J.V name, Some (cl, loc))
+          closures)
 
 end
 
@@ -124,23 +127,38 @@ end
 
 module Tramp : TC = struct
 
+  let _m2old = ref VarMap.empty
+  let m2new = ref VarMap.empty
+
+  let counters = ref VarMap.empty
+
   let rewrite cls get_prim =
+    let is_ident_rewrite x req_tc cont_tc =
+      let tc = VarSet.union req_tc cont_tc in
+      not (VarSet.mem x tc) &&
+      not (VarMap.exists (fun v _ -> VarSet.mem v tc) !m2new)
+    in
+
     match cls with
-    | [x,_cl,_,req_tc] when not (VarSet.mem x req_tc) ->
-        Ident.rewrite cls get_prim
+    | [x,_cl,_,req_tc,cont_tc,is_cont] when
+        is_ident_rewrite x req_tc cont_tc ->
+      Ident.rewrite cls get_prim
     | _ ->
     let counter = Var.fresh () in
     Var.name counter "counter";
-    let _m2old,m2new = List.fold_right (fun (v,_,_,_) (m2old,m2new) ->
-        let v' = Var.fork v in
-        VarMap.add v' v m2old, VarMap.add v v' m2new
-      ) cls (VarMap.empty,VarMap.empty)in
+    List.iter (fun (v,_,_,_,_,_) ->
+      let v' = Var.fork v in
+      _m2old := VarMap.add v' v !_m2old;
+      m2new := VarMap.add v v' !m2new
+    ) cls;
+      
     let rewrite v args =
       try
         match v with
         | J.S _ -> None
         | J.V v ->
-          let n = J.V (VarMap.find v m2new) in
+          let n = J.V (VarMap.find v !m2new) in
+          let counter = VarMap.find v !counters in
           let st = J.Return_statement (
             Some (
               J.ECond (
@@ -156,27 +174,65 @@ module Tramp : TC = struct
       with Not_found -> None
     in
     let rw = new tailcall_rewrite rewrite in
-    let wrappers = List.map (fun (v,clo,_,_) ->
+
+    let to_wrap, not_to_wrap = List.partition (fun (v,_,_,req_tc,cont_tc,_) ->
+      let all_tc = VarSet.union req_tc cont_tc in
+      (* A closure must be wrapped if:
+         - some closure of [cls] (including itself) performs a
+         tailcall to it;
+         - if it performs a tailcall to some other closure of [cls]
+         (so it has access to the counter). *)
+      List.exists (fun (_, _, _, req_tc, cont_tc, _) ->
+        VarSet.mem v req_tc || VarSet.mem v cont_tc
+      ) cls
+      || List.exists (fun (v', _, _, _, _, _) ->
+        VarSet.mem v' all_tc
+      ) cls
+    ) cls in
+        
+    Printf.eprintf "counter: v%d " (Var.idx counter);
+    Printf.eprintf "to_wrap:"; List.iter (fun (v,_,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) to_wrap;
+    Printf.eprintf " not_to_wrap:"; List.iter (fun (v,_,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) not_to_wrap;
+    Printf.eprintf "\n";
+    
+    counters := List.fold_left (fun counters (v,_,_,_,_,_) ->
+      VarMap.add v counter counters) !counters to_wrap;
+    let wrappers = List.map (fun (v,clo,_,_,_,_) ->
         match clo with
         | J.EFun (_, args, _, nid) ->
           let b = J.ECall(
               get_prim "caml_trampoline",
-              [J.ECall(J.EVar (J.V (VarMap.find v m2new)), J.ENum 0. :: List.map (fun i -> J.EVar i) args, J.N)], J.N) in
+              [J.ECall(J.EVar (J.V (VarMap.find v !m2new)), J.ENum 0. :: List.map (fun i -> J.EVar i) args, J.N)], J.N) in
           let b = (J.Statement (J.Return_statement (Some b)), J.N) in
           v,J.EFun (None, args,[b],nid )
-        | _ -> assert false) cls in
-    let reals = List.map (fun (v,clo,_,_) ->
-        VarMap.find v m2new,
+        | _ -> assert false) to_wrap in
+    let reals = List.map (fun (v,clo,_,_,_,_) ->
+        VarMap.find v !m2new,
         match clo with
         | J.EFun (nm,args,body,nid) ->
           J.EFun (nm,(J.V counter)::args,rw#sources body, nid)
         | _ -> assert false
-      ) cls in
+      ) to_wrap in
+    let not_wrapped = List.map (fun (v,clo,_,_,_,_) ->
+      v,
+      match clo with
+      | J.EFun (nm,args,body,nid) ->
+        J.EFun (nm,args,rw#sources body, nid)
+      | _ -> assert false
+    ) not_to_wrap in
+      
     let make binds =
-      [J.Variable_statement
-         (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds),
-       J.N] in
-    make (reals@wrappers)
+      J.Variable_statement
+         (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds) in
+    let res =
+      make (not_wrapped@reals@wrappers) in
+    (* cleanup *)
+    List.iter (fun (v,_,_,_,_,_) ->
+      let v' = VarMap.find v !m2new in
+      _m2old := VarMap.remove v' !_m2old;
+      m2new := VarMap.remove v !m2new
+    ) cls;
+    res
 
 end
 
@@ -186,3 +242,5 @@ let rewrite l =
   | TcNone -> Ident.rewrite l
   | TcTrampoline -> Tramp.rewrite l
   | TcWhile -> While.rewrite l
+
+let ident_rewrite = Ident.rewrite

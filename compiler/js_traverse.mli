@@ -36,6 +36,8 @@ end
 
 class map : mapper
 
+class unsuspend : mapper
+
 class subst : (ident -> ident) ->  object
     inherit mapper
   end

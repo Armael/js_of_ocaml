@@ -44,6 +44,8 @@ module J = Javascript
 
 (****)
 
+let (@|) l (x, y) = (l @ x, y)
+
 let rec list_group_rec f g l b m n =
   match l with
     [] ->
@@ -231,10 +233,14 @@ module Ctx = struct
       live : int array;
       mutated_vars : VarSet.t AddrMap.t;
       share: Share.t;
-      debug : Parse_bytecode.Debug.data }
+      debug : Parse_bytecode.Debug.data;
+      in_closure : Var.t option;
+      continuation_of : Var.t option;
+    }
 
   let initial blocks live mutated_vars share debug =
-    { blocks; live; mutated_vars; share; debug }
+    { blocks; live; mutated_vars; share; debug;
+      in_closure = None; continuation_of = None }
 
 end
 
@@ -427,7 +433,8 @@ let flush_queue expr_queue prop (l:J.statement_list) =
   in
   (List.rev_append instrs l, expr_queue)
 
-let flush_all expr_queue l = fst (flush_queue expr_queue flush_p l)
+let flush_all expr_queue (l, cont_tc) =
+  (fst (flush_queue expr_queue flush_p l), cont_tc)
 
 let enqueue expr_queue prop x ce loc cardinal acc =
   let (instrs, expr_queue) =
@@ -673,7 +680,7 @@ let parallel_renaming params args continuation queue =
         flush_queue queue px
           (instrs@[J.Variable_statement [J.V y, Some (cx, J.N)], J.N])
       in
-      st @ continuation queue)
+      st @| continuation queue)
     continuation l queue
 
 (****)
@@ -938,9 +945,10 @@ let rec group_closures_rec closures req =
   match closures with
     [] ->
       ([], VarSet.empty)
-  | ((var, vars, req_tc, _clo) as elt) :: rem ->
+  | ((var, vars, req_tc, cont_tc, is_cont, _clo) as elt) :: rem ->
     let req = VarSet.union vars req in
     let req = VarSet.union req req_tc in
+    let req = VarSet.union req cont_tc in
       let (closures', prov) = group_closures_rec rem req in
       match closures' with
       | [] ->
@@ -954,7 +962,25 @@ let group_closures l = fst (group_closures_rec l VarSet.empty)
 let rec collect_closures ctx l =
   match l with
     Let (x, Closure (args, ((pc, _) as cont))) :: rem ->
-      let clo = compile_closure ctx false cont in
+      let x_is_cont = Effects.is_cont_closure x in
+      let ctx' = match ctx.Ctx.in_closure with
+        | Some c when x_is_cont ->
+          begin match ctx.Ctx.continuation_of with
+            | None ->
+              { ctx with Ctx.continuation_of = Some c }
+            | Some _ ->
+              (* continuation of a continuation; we do not care of the
+                 name of the parent continuation, only of the
+                 non-continuation parent one. Which is already stored
+                 in [ctx.Ctx.continuation_of]. *)
+              ctx
+          end
+        | _ ->
+          { ctx with Ctx.continuation_of = None } in
+
+      let ctx' = { ctx' with Ctx.in_closure = Some x } in
+
+      let clo, x_conts_tc = compile_closure ctx' false cont in
 
       let all_vars = AddrMap.find pc ctx.Ctx.mutated_vars in
 
@@ -970,10 +996,16 @@ let rec collect_closures ctx l =
         | _                -> clo
       in
       let cl = J.EFun (None, List.map (fun v -> J.V v) args, clo, loc) in
-      let (l', rem') = collect_closures ctx rem in
-      ((x, vars, req_tc, cl) :: l', rem')
+      let (l', conts_tc', rem') = collect_closures ctx rem in
+      let conts_tc' =
+        if x_is_cont then
+          conts_tc' >> VarSet.union x_conts_tc >> VarSet.union req_tc
+        else
+          conts_tc' in
+
+      ((x, vars, req_tc, x_conts_tc, x_is_cont, cl) :: l', conts_tc', rem')
   | _ ->
-    ([], l)
+    ([], VarSet.empty, l)
 
 (****)
 
@@ -1197,51 +1229,70 @@ and translate_closures ctx expr_queue l loc =
   match l with
     [] ->
       ([], expr_queue)
-  | [(x, vars, req_tc, cl)] :: rem ->
+  | [(x, vars, req_tc, cont_tc, is_cont, cl)] :: rem ->
       let vars =
         vars
         >> VarSet.elements
         >> List.map (fun v -> J.V v)
       in
       let prim name = Share.get_prim s_var name ctx.Ctx.share in
-      let defs = Js_tailcall.rewrite [x,cl,loc,req_tc] prim in
-      let rec return_last x = function
-        | [] -> [J.Statement (J.Return_statement (Some (J.EVar (J.V x)))),J.N]
-        | [(J.Variable_statement l as sts, loc)]  ->
-          let l' = List.rev l in
-          begin match l' with
-          | (J.V x',Some (e,pc)) :: rem when x = x' ->
-              [J.Statement (J.Variable_statement (List.rev rem)), J.N;
-               J.Statement (J.Return_statement (Some e)), pc]
-          | _ -> [J.Statement sts, loc]
-          end
-        | (y,loc)::xs -> (J.Statement y, loc) :: return_last x xs
-      in
+      
+      let thunk = (fun () ->
+        let defs = Js_tailcall.rewrite [x,cl,loc,req_tc,cont_tc,is_cont] prim in
+        let rec return_last x = function
+          (* | [] -> [J.Statement (J.Return_statement (Some (J.EVar (J.V x)))),J.N] *)
+          | J.Variable_statement l as sts  ->
+            let l' = List.rev l in
+            begin match l' with
+              | (J.V x',Some (e,pc)) :: rem when x = x' ->
+                [J.Statement (J.Variable_statement (List.rev rem)), J.N;
+                 J.Statement (J.Return_statement (Some e)), pc]
+              | _ -> [J.Statement sts, J.N]
+            end
+          | y -> [J.Statement y, J.N]
+        in
+        let statements =
+          if vars = [] then defs else
+            J.Variable_statement [
+              J.V x,
+              Some (
+                J.ECall (J.EFun (None, vars, return_last x defs, J.N),
+                         List.map (fun x -> J.EVar x) vars, J.N), J.N)]
+        in
+        statements
+      ) in
+
       let statements =
-        if vars = [] then defs else
-          [J.Variable_statement [
-            J.V x,
-            Some (
-              J.ECall (J.EFun (None, vars, return_last x defs, J.N),
-                       List.map (fun x -> J.EVar x) vars, J.N), J.N)], J.N]
-      in
+        if is_cont then
+          (* This is a continuation. Its tailcalls will be rewritten
+             by the call to [Js_tailcall.rewrite] on its (non
+             continuation) parent.
+
+             If it doesn't have a parent (toplevel continuation), it
+             will be evaluated by [compile_program]. *)
+          J.Suspended_statement thunk
+        else
+          (* Not a continuation. We rewrite its tailcalls now, along
+             with the ones of its continuations and sub
+             continuations. *)
+          thunk () in
 
       let (st, expr_queue) =
         match ctx.Ctx.live.(Var.idx x),statements with
-        | 1, [J.Variable_statement [(J.V x',Some (e', _))],_] when x == x' ->
-            enqueue expr_queue flush_p x e' loc 1 []
+        | 1, J.Variable_statement [(J.V x',Some (e', _))] when x == x' ->
+          enqueue expr_queue flush_p x e' loc 1 []
         | 0, _ -> (* deadcode is off *)
-            flush_queue expr_queue flush_p statements
+          flush_queue expr_queue flush_p [statements, J.N]
         | _ ->
-            flush_queue expr_queue flush_p statements
+          flush_queue expr_queue flush_p [statements, J.N]
       in
       let (st', expr_queue) = translate_closures ctx expr_queue rem loc in
       (st @ st', expr_queue)
   | l :: rem ->
       let names =
-        List.fold_left (fun s (x, _, _, _) -> VarSet.add x s) VarSet.empty l in
+        List.fold_left (fun s (x, _, _, _, _, _) -> VarSet.add x s) VarSet.empty l in
       let vars =
-        List.fold_left (fun s (_, s', _, _) -> VarSet.union s s') VarSet.empty l
+        List.fold_left (fun s (_, s', _, _, _, _) -> VarSet.union s s') VarSet.empty l
       in
       let vars =
         VarSet.diff vars names
@@ -1249,7 +1300,8 @@ and translate_closures ctx expr_queue l loc =
         >> List.map (fun v -> J.V v)
       in
       let defs' =
-        List.map (fun (x, _, req_tc, cl) -> (x, cl, loc, req_tc)) l in
+        List.map (fun (x, _, req_tc, cont_tc, is_cont, cl) ->
+          (x, cl, loc, req_tc, cont_tc, is_cont)) l in
       let prim name = Share.get_prim s_var name ctx.Ctx.share in
       let defs = Js_tailcall.rewrite defs' prim in
       let statements =
@@ -1259,43 +1311,42 @@ and translate_closures ctx expr_queue l loc =
           Var.name tbl "funenv";
           let arr =
             J.EArr
-              (List.map (fun (x, _, _, _) -> Some (J.EVar (J.V x))) l)
+              (List.map (fun (x, _, _, _, _, _) -> Some (J.EVar (J.V x))) l)
           in
           let assgn =
             List.fold_left
-              (fun (l, n) (x, _, _, _) ->
+              (fun (l, n) (x, _, _, _, _, _) ->
                  ((J.V x,
                    Some (J.EAccess (J.EVar (J.V tbl), int n), loc)) :: l,
                   n + 1))
               ([], 0) l
           in
-          [J.Variable_statement
+          J.Variable_statement
             ((J.V tbl,
               Some
                 (J.ECall
                    (J.EFun (None, vars,
-                            List.map (fun (s, loc) -> (J.Statement s, loc)) defs
+                            [J.Statement defs, J.N]
                             @ [J.Statement (J.Return_statement (Some arr)),J.N],
                             J.N),
                     List.map (fun x -> J.EVar x) vars, J.N), J.N)) ::
-              List.rev (fst assgn)),
-           J.N]
+             List.rev (fst assgn))
         end
       in
-      let (st, expr_queue) = flush_queue expr_queue flush_p statements in
+      let (st, expr_queue) = flush_queue expr_queue flush_p [statements, J.N] in
       let (st', expr_queue) = translate_closures ctx expr_queue rem loc in
       (st @ st', expr_queue)
 
 and translate_instr ctx expr_queue loc instr =
   match instr with
     [] ->
-      ([], expr_queue)
+      ([], expr_queue, VarSet.empty)
   | Let (_, Closure _) :: _ ->
-      let (l, rem) = collect_closures ctx instr in
+      let (l, cont_tc, rem) = collect_closures ctx instr in
       let l = group_closures l in
       let (st, expr_queue) = translate_closures ctx expr_queue l loc in
-      let (instrs, expr_queue) = translate_instr ctx expr_queue loc rem in
-      (st @ instrs, expr_queue)
+      let (instrs, expr_queue, cont_tc') = translate_instr ctx expr_queue loc rem in
+      (st @ instrs, expr_queue, VarSet.union cont_tc cont_tc')
   | i :: rem ->
       let (st, expr_queue) =
         match i with
@@ -1347,8 +1398,8 @@ and translate_instr ctx expr_queue loc instr =
                             cz))),
                loc]
       in
-      let (instrs, expr_queue) = translate_instr ctx expr_queue loc rem in
-      (st @ instrs, expr_queue)
+      let (instrs, expr_queue, cont_tc) = translate_instr ctx expr_queue loc rem in
+      (st @ instrs, expr_queue, cont_tc)
 
 and compile_block st queue (pc : addr) frontier interm =
 if queue <> [] && (AddrSet.mem pc st.loops || not (Option.Optim.inline ())) then
@@ -1381,10 +1432,9 @@ else begin
   in
   let new_frontier = resolve_nodes interm grey in
   let block = AddrMap.find pc st.blocks in
-  let (seq, queue) =
+  let (seq, queue, instr_cont_tc) =
     translate_instr st.ctx queue (source_location st.ctx pc) block.body in
-  let body =
-    seq @
+  let branch, branch_cont_tc = 
     match block.branch with
       Code.Pushtrap ((pc1, args1), x, (pc2, args2), pc3) ->
   (* FIX: document this *)
@@ -1400,12 +1450,12 @@ else begin
         if limit_body then incr_preds st pc3;
         assert (AddrSet.cardinal inner_frontier <= 1);
         if debug () then Format.eprintf "@[<2>try {@,";
-        let body =
+        let body, try_cont_tc =
           compile_branch st [] (pc1, args1)
             None AddrSet.empty inner_frontier interm
         in
         if debug () then Format.eprintf "} catch {@,";
-        let handler = compile_block st [] pc2 inner_frontier interm in
+        let handler, handler_cont_tc = compile_block st [] pc2 inner_frontier interm in
         let handler =
           if st.ctx.Ctx.live.(Var.idx x) > 0 && Option.Optim.excwrap ()
           then (J.Expression_statement (
@@ -1456,17 +1506,20 @@ else begin
           else
             s
         in
+        let trywith_cont_tc = VarSet.union try_cont_tc handler_cont_tc in
+        let rem, rem_cont_tc =
+          if AddrSet.is_empty inner_frontier then [], VarSet.empty else begin
+             let pc = AddrSet.choose inner_frontier in
+             if AddrSet.mem pc frontier then [], VarSet.empty else
+               compile_block st [] pc frontier interm
+          end in
         flush_all queue
           ((wrap
               (J.Try_statement (body,
                                 Some (J.V x, handler),
                                 None)),
-            source_location st.ctx pc) ::
-           if AddrSet.is_empty inner_frontier then [] else begin
-             let pc = AddrSet.choose inner_frontier in
-             if AddrSet.mem pc frontier then [] else
-               compile_block st [] pc frontier interm
-           end)
+            source_location st.ctx pc) :: rem,
+           VarSet.union trywith_cont_tc rem_cont_tc)
     | _ ->
         let (new_frontier, new_interm) =
           if AddrSet.cardinal new_frontier > 1 then begin
@@ -1505,17 +1558,20 @@ else begin
         in
         assert (AddrSet.cardinal new_frontier <= 1);
         (* Beware evaluation order! *)
-        let cond =
+        let cond, cond_cont_tc =
           compile_conditional
             st queue pc block.branch block.handler
             backs new_frontier new_interm succs in
-        cond @
-        if AddrSet.cardinal new_frontier = 0 then [] else begin
-          let pc = AddrSet.choose new_frontier in
-          if AddrSet.mem pc frontier then [] else
-          compile_block st [] pc frontier interm
-        end
+        let rem, rem_cont_tc =
+          if AddrSet.cardinal new_frontier = 0 then [], VarSet.empty else begin
+            let pc = AddrSet.choose new_frontier in
+            if AddrSet.mem pc frontier then [], VarSet.empty else
+              compile_block st [] pc frontier interm
+          end in
+        (cond @ rem, VarSet.union cond_cont_tc rem_cont_tc)
   in
+  let body = seq @ branch in
+  let body_cont_tc = VarSet.union instr_cont_tc branch_cont_tc in
   if AddrSet.mem pc st.loops then begin
     let label =
       match st.loop_stack with
@@ -1538,10 +1594,10 @@ else begin
       source_location st.ctx pc
     in
     match label with
-      | None -> [st]
-      | Some label -> [J.Labelled_statement (label, st), J.N]
+      | None -> [st], body_cont_tc
+      | Some label -> [J.Labelled_statement (label, st), J.N], body_cont_tc
   end else
-    body
+    body, body_cont_tc
 end
 
 and compile_decision_tree st _queue handler backs frontier interm succs loc cx dtree =
@@ -1560,8 +1616,8 @@ and compile_decision_tree st _queue handler backs frontier interm succs loc cx d
         AddrSet.is_empty d in
       never, compile_branch st [] cont handler backs frontier interm
     | DTree.If (cond,cont1,cont2) ->
-      let never1, iftrue = loop cx cont1 in
-      let never2, iffalse = loop cx cont2 in
+      let never1, (iftrue, iftrue_cont_tc) = loop cx cont1 in
+      let never2, (iffalse, iffalse_cont_tc) = loop cx cont2 in
       let e' = match cond with
           IsTrue         -> cx
         | CEq n          -> J.EBin (J.EqEqEq, int32 n, cx)
@@ -1571,15 +1627,18 @@ and compile_decision_tree st _queue handler backs frontier interm succs loc cx d
           J.EBin (J.Lt, n', unsigned cx)
         | CLe n          -> J.EBin (J.Le, int32 n, cx) in
       never1&&never2,
-      Js_simpl.if_statement e' loc
-        (J.Block iftrue, J.N) never1
-        (J.Block iffalse, J.N) never2
+      (Js_simpl.if_statement e' loc
+         (J.Block iftrue, J.N) never1
+         (J.Block iffalse, J.N) never2,
+       VarSet.union iftrue_cont_tc iffalse_cont_tc)
     | DTree.Switch a ->
       let all_never = ref true in
       let len = Array.length a in
       let last_index = len - 1 in
+      let arr_cont_tc = ref VarSet.empty in
       let arr = Array.mapi (fun i (ints,cont) ->
-        let never,cont = loop cx cont in
+        let never, (cont, cont_tc) = loop cx cont in
+        arr_cont_tc := VarSet.union !arr_cont_tc cont_tc;
         if not never then all_never := false;
         let cont =
           if never || (* default case *) i = last_index
@@ -1594,7 +1653,7 @@ and compile_decision_tree st _queue handler backs frontier interm succs loc cx d
         ) ints
       ) l) in
 
-      !all_never, [J.Switch_statement (cx, l, Some last, []), loc]
+      !all_never, ([J.Switch_statement (cx, l, Some last, []), loc], !arr_cont_tc)
   in
   let cx, binds = match cx with
     | J.EVar _
@@ -1602,7 +1661,7 @@ and compile_decision_tree st _queue handler backs frontier interm succs loc cx d
     | _ ->
       let v = J.V (Code.Var.fresh ()) in
       J.EVar v, [J.Variable_statement [v,Some (cx,J.N)],J.N] in
-  (binds @ snd(loop cx dtree))
+  (binds @| snd(loop cx dtree))
 
 and compile_conditional st queue pc last handler backs frontier interm succs =
   List.iter
@@ -1621,12 +1680,12 @@ and compile_conditional st queue pc last handler backs frontier interm succs =
   match last with
     Return x ->
       let ((_px, cx), queue) = access_queue queue x in
-      flush_all queue [J.Return_statement (Some cx), loc]
+      flush_all queue ([J.Return_statement (Some cx), loc], VarSet.empty)
   | Raise x ->
       let ((_px, cx), queue) = access_queue queue x in
-      flush_all queue [J.Throw_statement cx, loc]
+      flush_all queue ([J.Throw_statement cx, loc], VarSet.empty)
   | Stop ->
-      flush_all queue [J.Return_statement None, loc]
+      flush_all queue ([J.Return_statement None, loc], VarSet.empty)
   | Branch cont ->
     compile_branch st queue cont handler backs frontier interm
   | Pushtrap _ ->
@@ -1656,10 +1715,10 @@ and compile_conditional st queue pc last handler backs frontier interm succs =
        so we can directly refer to it *)
     (* We do not want to share the string "number".
        See comment for IsInt *)
-    let b1 = compile_decision_tree st queue handler backs frontier interm succs
+    let b1, cont_tc1 = compile_decision_tree st queue handler backs frontier interm succs
         loc (var x)
         (DTree.build_switch a1) in
-    let b2 = compile_decision_tree st queue handler backs frontier interm succs
+    let b2, cont_tc2 = compile_decision_tree st queue handler backs frontier interm succs
         loc (J.EAccess(var x, J.ENum 0.))
         (DTree.build_switch a2) in
     let code =
@@ -1668,7 +1727,7 @@ and compile_conditional st queue pc last handler backs frontier interm succs =
                 str_js "number"))
         loc
         (Js_simpl.block b1) false (Js_simpl.block b2) false in
-    flush_all queue code
+    flush_all queue (code, VarSet.union cont_tc1 cont_tc2)
   in
   if debug () then begin
     match last with
@@ -1732,7 +1791,7 @@ and compile_exn_handling ctx queue (pc, args) handler continuation =
                            J.Variable_statement [J.V y, Some (cx, loc)],
                            loc]
                in
-               st @ loop continuation old args params queue
+               st @| loop continuation old args params queue
               end
           | _ ->
               assert false
@@ -1762,10 +1821,10 @@ and compile_branch st queue ((pc, _) as cont) handler backs frontier interm =
       else
         Format.eprintf "continue (%d);@ " pc
     end;
-    flush_all queue [J.Continue_statement label, J.N]
+    flush_all queue ([J.Continue_statement label, J.N], VarSet.empty)
   end else if AddrSet.mem pc frontier || AddrMap.mem pc interm then begin
     if debug () then Format.eprintf "(br %d)@ " pc;
-    flush_all queue (compile_branch_selection pc interm)
+    flush_all queue (compile_branch_selection pc interm, VarSet.empty)
   end else
     compile_block st queue pc frontier interm))
 
@@ -1787,10 +1846,11 @@ and compile_closure ctx at_toplevel (pc, args) =
       at_toplevel }
   in
   build_graph st pc AddrSet.empty;
+  
   let current_blocks = st.visited_blocks in
   st.visited_blocks <- AddrSet.empty;
   if debug () then Format.eprintf "@[<hov 2>closure{@,";
-  let res =
+  let res, cont_tc =
     compile_branch st [] (pc, args) None
       AddrSet.empty AddrSet.empty AddrMap.empty
   in
@@ -1800,7 +1860,7 @@ and compile_closure ctx at_toplevel (pc, args) =
     Format.eprintf "Some blocks not compiled!@."; assert false
   end;
   if debug () then Format.eprintf "}@]@ ";
-  List.map (fun (st, loc) -> (J.Statement st, loc)) res
+  List.map (fun (st, loc) -> (J.Statement st, loc)) res, cont_tc
 
 
 let generate_shared_value ctx =
@@ -1823,7 +1883,8 @@ let generate_shared_value ctx =
   else [strings]
 
 let compile_program ctx pc =
-  let res = compile_closure ctx true (pc, []) in
+  let res, _ = compile_closure ctx true (pc, []) in
+  let res = (new Js_traverse.unsuspend)#sources res in
   let res = generate_shared_value ctx @ res in
   if debug () then Format.eprintf "@.@.";
   res

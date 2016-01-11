@@ -6,6 +6,7 @@ type graph = {
   succs : AddrSet.t IntMap.t;
   backs : AddrSet.t IntMap.t;
   preds : AddrSet.t IntMap.t;
+  loops : AddrSet.t;
 }
 
 let get_values k map =
@@ -30,19 +31,26 @@ let build_graph (blocks: block AddrMap.t) (pc: addr): graph =
         |> AddrSet.fold (fun back preds -> add_value back pc preds)
           backs
       in
+      let loops = AddrSet.fold AddrSet.add backs g.loops in
 
       let g = { g with
                 backs = AddrMap.add pc backs g.backs;
                 succs = AddrMap.add pc succs g.succs;
-                preds; } in
+                preds;
+                loops;
+              } in
       AddrSet.fold (fun pc' (g, visited) -> loop g pc' visited anc)
         succs (g, visited)
     end else (g, visited)
   in
 
   let (g, _) =
-    loop { root = pc;
-           succs = IntMap.empty; backs = IntMap.empty; preds = IntMap.empty }
+    loop
+      { root = pc;
+        succs = IntMap.empty;
+        backs = IntMap.empty;
+        preds = IntMap.empty;
+        loops = AddrSet.empty; }
       pc AddrSet.empty AddrSet.empty in
   g
 
@@ -73,12 +81,12 @@ let dominated_by_node (g: graph): AddrSet.t IntMap.t =
     let rec loop node visited =
       let visited = AddrSet.add node visited in
       try
-        let succs = IntMap.find node g.succs |> AddrSet.filter ((<>) v) in
+        let succs = AddrSet.diff (IntMap.find node g.succs) visited in
         AddrSet.fold loop succs visited
       with Not_found ->
         visited
     in
-    loop g.root AddrSet.empty
+    loop g.root (AddrSet.singleton v)
   in
 
   let all_nodes =
@@ -165,6 +173,11 @@ let merge_jump_closures jc1 jc2 =
 
 (******************************************************************************)
 
+let cont_closures = ref VarSet.empty
+let is_cont_closure v = VarSet.mem v !cont_closures
+
+(******************************************************************************)
+
 let fresh2 () = Var.fresh (), Var.fresh ()
 let fresh3 () = Var.fresh (), Var.fresh (), Var.fresh ()
 let fresh4 () = Var.fresh (), Var.fresh (), Var.fresh (), Var.fresh ()
@@ -214,6 +227,8 @@ let cps_branch jc blocks k kf cont =
     [], Branch (caddr, params)
 
 let closure_of_cont new_blocks jc blocks params k kf cont =
+  let name = Var.fresh () in
+  cont_closures := VarSet.add name !cont_closures;
   let fresh_params = List.map (fun v -> (v, Var.fresh ())) params in
   let fresh_of v =
     try List.assoc v fresh_params with
@@ -228,7 +243,7 @@ let closure_of_cont new_blocks jc blocks params k kf cont =
     handler = None; 
     body; branch;
   } in
-  Closure (params, (addr, params))
+  (name, Closure (params, (addr, params)))
 
 let identity () =
   let x = Var.fresh () in
@@ -341,10 +356,10 @@ let cps_last new_blocks jc blocks (k: Var.t) (kf: Var.t) (last: last): instr lis
         cps_branch cont
     end
   | Perform (ret, eff, cont) ->
-    let cur_k, cur_stack = fresh2 () in
+    let cur_stack = Var.fresh () in
     let f, v = fresh2 () in
     let kfret = Var.fresh () in
-    let cur_k_closure = closure_of_cont [ret] cont in
+    let cur_k, cur_k_closure = closure_of_cont [ret] cont in
     let stack = add_block new_blocks (alloc_stack cur_k kf) in
     [Let (cur_k, cur_k_closure);
      Let (cur_stack, Closure ([f; v], (stack, [f; v])));
@@ -360,8 +375,7 @@ let cps_last new_blocks jc blocks (k: Var.t) (kf: Var.t) (last: last): instr lis
         [Let (ret, Apply (f, k :: kf :: args, full))],
         Return ret
       | Some cont ->
-        let cur_k = Var.fresh () in
-        let cur_k_closure = closure_of_cont [ret] cont in
+        let cur_k, cur_k_closure = closure_of_cont [ret] cont in
         let ret' = Var.fresh () in
         [Let (cur_k, cur_k_closure);
          Let (ret', Apply (f, cur_k :: kf :: args, full))],
