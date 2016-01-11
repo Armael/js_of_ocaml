@@ -122,6 +122,12 @@ type jump_closures = {
   allocated_call_blocks : (Var.t, addr) Hashtbl.t;
 }
 
+let empty_jump_closures = {
+  closure_of_jump = IntMap.empty;
+  closure_of_alloc_site = IntMap.empty;
+  allocated_call_blocks = Hashtbl.create 3;
+}
+
 let jump_closures (g: graph): jump_closures =
   let idom = immediate_dominator_of_node g in
   let closure_of_jump, closure_of_alloc_site =
@@ -142,6 +148,20 @@ let jump_closures (g: graph): jump_closures =
 
   { closure_of_jump; closure_of_alloc_site;
     allocated_call_blocks = Hashtbl.create 37 }
+
+let merge_jump_closures jc1 jc2 =
+  let m _ a b = 
+    match (a, b) with
+    | Some x, None | None, Some x -> Some x
+    | _ -> assert false in
+  { closure_of_jump =
+      IntMap.merge m jc1.closure_of_jump jc2.closure_of_jump;
+    closure_of_alloc_site =
+      IntMap.merge m jc1.closure_of_alloc_site jc2.closure_of_alloc_site;
+    allocated_call_blocks =
+      (* TODO *)
+      Hashtbl.create 3
+  }
 
 (******************************************************************************)
 
@@ -264,14 +284,8 @@ let cps_last new_blocks jc (k: Var.t) (kf: Var.t) (last: last): instr list * las
     let args = k :: kf :: args in
     try
       let cname = IntMap.find pc jc.closure_of_jump in
-      begin
-        let call_block =
-          try Hashtbl.find jc.allocated_call_blocks cname
-          with Not_found ->
-            add_call_block new_blocks jc cname args
-        in
-        (call_block, args)
-      end
+      let call_block = add_call_block new_blocks jc cname args in
+      (call_block, args)
     with Not_found ->
       (pc, args)
   in
@@ -431,32 +445,37 @@ let nop (start, blocks, free_pc) =
 let f ((start, blocks, free_pc): Code.program): Code.program =
   let new_blocks = ref (AddrMap.empty, free_pc) in
 
-  Printf.eprintf "start: %d\n\n" start;
-  let cfg = build_graph blocks start in
-  let jc = jump_closures cfg in
+  let jc : jump_closures =
+    Code.fold_closures (start, blocks, free_pc)
+      (fun _ _ (start, _) jc ->
+         Printf.eprintf ">> Start: %d\n\n" start;
+         let cfg = build_graph blocks start in
+         let closure_jc = jump_closures cfg in
 
-  print_graph cfg;
+         print_graph cfg;
+         Printf.eprintf "\nidom:\n";
 
-  Printf.eprintf "\nidom:\n";
+         let idom = immediate_dominator_of_node cfg in
+         IntMap.iter (fun node dom ->
+           Printf.eprintf "%d -> %d\n" node dom;
+         ) idom;
 
-  let idom = immediate_dominator_of_node cfg in
-  IntMap.iter (fun node dom ->
-    Printf.eprintf "%d -> %d\n" node dom;
-  ) idom;
+         Printf.eprintf "\nClosure of alloc site:\n";
+         IntMap.iter (fun block to_allocate ->
+           List.iter (fun (cname, caddr) ->
+             Printf.eprintf "%d -> v%d, %d\n" block (Var.idx cname) caddr;
+           ) to_allocate
+         ) closure_jc.closure_of_alloc_site;
 
-  Printf.eprintf "\n";
+         Printf.eprintf "\nClosure of jump:\n";
+         IntMap.iter (fun block cname ->
+           Printf.eprintf "%d -> v%d\n" block (Var.idx cname);
+         ) closure_jc.closure_of_jump;
+         Printf.eprintf "\n";
 
-  Printf.eprintf "Closure of alloc site:\n";
-  IntMap.iter (fun block to_allocate ->
-    List.iter (fun (cname, caddr) ->
-      Printf.eprintf "%d -> v%d, %d\n" block (Var.idx cname) caddr;
-    ) to_allocate
-  ) jc.closure_of_alloc_site;
-
-  Printf.eprintf "\nClosure of jump:\n";
-  IntMap.iter (fun block cname ->
-    Printf.eprintf "%d -> v%d\n" block (Var.idx cname);
-  ) jc.closure_of_jump;
+         merge_jump_closures closure_jc jc
+      ) empty_jump_closures
+  in
     
   let blocks = cps_blocks new_blocks jc blocks in
   let k, kf = fresh2 () in
