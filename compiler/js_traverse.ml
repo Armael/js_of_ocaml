@@ -105,6 +105,8 @@ class map : mapper = object(m)
            (match final with
             | None   -> None
             | Some s -> Some (m#statements s)))
+    | Suspended_statement thunk ->
+      Suspended_statement thunk
 
   method statement_o x = match x with
     | None          -> None
@@ -162,6 +164,15 @@ class map : mapper = object(m)
   method sources x = List.map (fun (s, loc) -> (m#source s, loc)) x
 
   method program x = m#sources x
+end
+
+class unsuspend = object(self)
+  inherit map
+
+  method statement = function
+    | Suspended_statement thunk ->
+      self#statement (thunk ())
+    | s -> s
 end
 
 (* var substitution *)

@@ -116,6 +116,8 @@ and statement =
   | Throw_statement of expression
   | Try_statement of block * (ident * block) option * block option
 
+  | Suspended_statement of (unit -> statement)
+
   | Debugger_statement
 
 and ('left,'right) either =

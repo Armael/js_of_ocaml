@@ -39,6 +39,7 @@ class tailcall = object(m)
     | Return_statement (Some e) ->
       ignore(m#last_e e);
       s
+
     | _ -> s
 
   method source s =
@@ -72,6 +73,8 @@ class tailcall_rewrite f = object(m)
         | None -> s
         | Some s -> s
       end
+    | Suspended_statement thunk ->
+      thunk ()
     | _ -> s
 
   method private last_e e =
@@ -106,15 +109,15 @@ end
 
 module type TC = sig
   val rewrite :
-    (Code.Var.t * Javascript.expression * J.location * VarSet.t) list ->
-    (string -> Javascript.expression) -> Javascript.statement_list
+    (Code.Var.t * Javascript.expression * J.location * VarSet.t * VarSet.t option) list ->
+    (string -> Javascript.expression) -> Javascript.statement
 end
 
 module Ident : TC = struct
   let rewrite closures _get_prim =
-    [J.Variable_statement
-       (List.map (fun (name, cl, loc, _) -> J.V name, Some (cl, loc))
-          closures), J.N]
+    J.Variable_statement
+       (List.map (fun (name, cl, loc, _, _) -> J.V name, Some (cl, loc))
+          closures)
 
 end
 
@@ -124,23 +127,36 @@ end
 
 module Tramp : TC = struct
 
+  let _m2old = ref VarMap.empty
+  let m2new = ref VarMap.empty
+
   let rewrite cls get_prim =
+    let is_ident_rewrite x req_tc cont_tc =
+      let tc =
+        match cont_tc with
+        | None -> req_tc
+        | Some s -> VarSet.union req_tc s in
+      not (VarSet.mem x tc) &&
+      not (VarMap.exists (fun v _ -> VarSet.mem v tc) !m2new)
+    in
+    
     match cls with
-    | [x,_cl,_,req_tc] when not (VarSet.mem x req_tc) ->
-        Ident.rewrite cls get_prim
+    | [x,_cl,_,req_tc,cont_tc] when is_ident_rewrite x req_tc cont_tc ->
+      Ident.rewrite cls get_prim
     | _ ->
     let counter = Var.fresh () in
     Var.name counter "counter";
-    let _m2old,m2new = List.fold_right (fun (v,_,_,_) (m2old,m2new) ->
-        let v' = Var.fork v in
-        VarMap.add v' v m2old, VarMap.add v v' m2new
-      ) cls (VarMap.empty,VarMap.empty)in
+    List.iter (fun (v,_,_,_,_) ->
+      let v' = Var.fork v in
+      _m2old := VarMap.add v' v !_m2old;
+      m2new := VarMap.add v v' !m2new
+    ) cls;
     let rewrite v args =
       try
         match v with
         | J.S _ -> None
         | J.V v ->
-          let n = J.V (VarMap.find v m2new) in
+          let n = J.V (VarMap.find v !m2new) in
           let st = J.Return_statement (
             Some (
               J.ECond (
@@ -156,26 +172,25 @@ module Tramp : TC = struct
       with Not_found -> None
     in
     let rw = new tailcall_rewrite rewrite in
-    let wrappers = List.map (fun (v,clo,_,_) ->
+    let wrappers = List.map (fun (v,clo,_,_,_) ->
         match clo with
         | J.EFun (_, args, _, nid) ->
           let b = J.ECall(
               get_prim "caml_trampoline",
-              [J.ECall(J.EVar (J.V (VarMap.find v m2new)), J.ENum 0. :: List.map (fun i -> J.EVar i) args, J.N)], J.N) in
+              [J.ECall(J.EVar (J.V (VarMap.find v !m2new)), J.ENum 0. :: List.map (fun i -> J.EVar i) args, J.N)], J.N) in
           let b = (J.Statement (J.Return_statement (Some b)), J.N) in
           v,J.EFun (None, args,[b],nid )
         | _ -> assert false) cls in
-    let reals = List.map (fun (v,clo,_,_) ->
-        VarMap.find v m2new,
+    let reals = List.map (fun (v,clo,_,_,_) ->
+        VarMap.find v !m2new,
         match clo with
         | J.EFun (nm,args,body,nid) ->
           J.EFun (nm,(J.V counter)::args,rw#sources body, nid)
         | _ -> assert false
       ) cls in
     let make binds =
-      [J.Variable_statement
-         (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds),
-       J.N] in
+      J.Variable_statement
+         (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds) in
     make (reals@wrappers)
 
 end
@@ -186,3 +201,5 @@ let rewrite l =
   | TcNone -> Ident.rewrite l
   | TcTrampoline -> Tramp.rewrite l
   | TcWhile -> While.rewrite l
+
+let ident_rewrite = Ident.rewrite
