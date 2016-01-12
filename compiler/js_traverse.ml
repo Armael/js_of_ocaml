@@ -167,12 +167,12 @@ class map : mapper = object(m)
 end
 
 class unsuspend = object(self)
-  inherit map
+  inherit map as super
 
   method statement = function
     | Suspended_statement thunk ->
       self#statement (thunk ())
-    | s -> s
+    | s -> super#statement s
 end
 
 (* var substitution *)

@@ -1358,8 +1358,7 @@ and translate_instr ctx expr_queue loc instr =
       let l = group_closures l in
       let (st, expr_queue) = translate_closures ctx expr_queue l loc in
       let (instrs, expr_queue, cont_tc') = translate_instr ctx expr_queue loc rem in
-      assert (VarSet.is_empty cont_tc');
-      (st @ instrs, expr_queue, cont_tc)
+      (st @ instrs, expr_queue, VarSet.union cont_tc cont_tc')
   | i :: rem ->
       let (st, expr_queue) =
         match i with

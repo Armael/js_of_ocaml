@@ -130,6 +130,8 @@ module Tramp : TC = struct
   let _m2old = ref VarMap.empty
   let m2new = ref VarMap.empty
 
+  let counters = ref VarMap.empty
+
   let rewrite cls get_prim =
     let is_ident_rewrite x req_tc cont_tc =
       let tc =
@@ -151,12 +153,20 @@ module Tramp : TC = struct
       _m2old := VarMap.add v' v !_m2old;
       m2new := VarMap.add v v' !m2new
     ) cls;
+    let all_tc = List.fold_left (fun all_tc (_, _, _, req_tc, cont_tc) ->
+      VarSet.union all_tc
+        (match cont_tc with
+         | None -> req_tc
+         | Some s -> VarSet.union s req_tc)
+    ) VarSet.empty cls in
+      
     let rewrite v args =
       try
         match v with
         | J.S _ -> None
         | J.V v ->
           let n = J.V (VarMap.find v !m2new) in
+          let counter = VarMap.find v !counters in
           let st = J.Return_statement (
             Some (
               J.ECond (
@@ -172,6 +182,9 @@ module Tramp : TC = struct
       with Not_found -> None
     in
     let rw = new tailcall_rewrite rewrite in
+    let to_wrap, not_to_wrap = List.partition (fun (v,_,_,_,_) -> VarSet.mem v all_tc) cls in
+    counters := List.fold_left (fun counters (v,_,_,_,_) ->
+      VarMap.add v counter counters) !counters to_wrap;
     let wrappers = List.map (fun (v,clo,_,_,_) ->
         match clo with
         | J.EFun (_, args, _, nid) ->
@@ -180,18 +193,26 @@ module Tramp : TC = struct
               [J.ECall(J.EVar (J.V (VarMap.find v !m2new)), J.ENum 0. :: List.map (fun i -> J.EVar i) args, J.N)], J.N) in
           let b = (J.Statement (J.Return_statement (Some b)), J.N) in
           v,J.EFun (None, args,[b],nid )
-        | _ -> assert false) cls in
+        | _ -> assert false) to_wrap in
     let reals = List.map (fun (v,clo,_,_,_) ->
         VarMap.find v !m2new,
         match clo with
         | J.EFun (nm,args,body,nid) ->
           J.EFun (nm,(J.V counter)::args,rw#sources body, nid)
         | _ -> assert false
-      ) cls in
+      ) to_wrap in
+    let not_wrapped = List.map (fun (v,clo,_,_,_) ->
+      v,
+      match clo with
+      | J.EFun (nm,args,body,nid) ->
+        J.EFun (nm,args,rw#sources body, nid)
+      | _ -> assert false
+    ) not_to_wrap in
+      
     let make binds =
       J.Variable_statement
          (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds) in
-    make (reals@wrappers)
+    make (not_wrapped@reals@wrappers)
 
 end
 
