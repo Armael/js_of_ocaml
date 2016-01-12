@@ -6,6 +6,7 @@ type graph = {
   succs : AddrSet.t IntMap.t;
   backs : AddrSet.t IntMap.t;
   preds : AddrSet.t IntMap.t;
+  loops : AddrSet.t;
 }
 
 let get_values k map =
@@ -30,19 +31,26 @@ let build_graph (blocks: block AddrMap.t) (pc: addr): graph =
         |> AddrSet.fold (fun back preds -> add_value back pc preds)
           backs
       in
+      let loops = AddrSet.fold AddrSet.add backs g.loops in
 
       let g = { g with
                 backs = AddrMap.add pc backs g.backs;
                 succs = AddrMap.add pc succs g.succs;
-                preds; } in
+                preds;
+                loops;
+              } in
       AddrSet.fold (fun pc' (g, visited) -> loop g pc' visited anc)
         succs (g, visited)
     end else (g, visited)
   in
 
   let (g, _) =
-    loop { root = pc;
-           succs = IntMap.empty; backs = IntMap.empty; preds = IntMap.empty }
+    loop
+      { root = pc;
+        succs = IntMap.empty;
+        backs = IntMap.empty;
+        preds = IntMap.empty;
+        loops = AddrSet.empty; }
       pc AddrSet.empty AddrSet.empty in
   g
 
