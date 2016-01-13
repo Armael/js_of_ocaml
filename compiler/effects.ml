@@ -226,6 +226,9 @@ let cps_branch st k kf cont =
   let params = k :: kf :: snd cont in
   try
     let cname = IntMap.find caddr st.jc.closure_of_jump in
+    Printf.eprintf "cps_branch: %d ~> call v%d params:" caddr (Var.idx cname);
+    List.iter (fun v -> Printf.eprintf " v%d" (Var.idx v)) params;
+    Printf.eprintf "\n\n";
     let ret = Var.fresh () in
     [Let (ret, Apply (cname, params, false))],
     Return ret
@@ -480,9 +483,11 @@ let f ((start, blocks, free_pc): Code.program): Code.program =
       (fun _ _ (start, _) jc ->
          Printf.eprintf ">> Start: %d\n\n" start;
          let cfg = build_graph blocks start in
+
+         print_graph cfg; Printf.eprintf "%!";
+
          let closure_jc = jump_closures cfg in
 
-         print_graph cfg;
          Printf.eprintf "\nidom:\n";
 
          let idom = immediate_dominator_of_node cfg in
@@ -509,6 +514,10 @@ let f ((start, blocks, free_pc): Code.program): Code.program =
 
   let st = { new_blocks = AddrMap.empty, free_pc; blocks; jc } in
   let blocks = cps_blocks st in
+
+  Printf.eprintf "Cont closures:";
+  VarSet.iter (fun c -> Printf.eprintf " v%d" (Var.idx c)) !cont_closures;
+  Printf.eprintf "\n\n%!";
 
   let k, kf = fresh2 () in
   let v1, v2, v3 = fresh3 () in
