@@ -198,6 +198,16 @@ let add_block st block =
   st.new_blocks <- (AddrMap.add free_pc block blocks, free_pc + 1);
   free_pc
 
+let filter_cont_params st cont =
+  let block = AddrMap.find (fst cont) st.blocks in
+  let cont_params = snd cont in
+  let block_params = block.params in
+  let rec loop = function
+    | x::xs, y::ys -> x :: loop (xs, ys)
+    | _, [] -> []
+    | [], _ -> assert false in
+  (fst cont, loop (cont_params, block_params))
+
 let add_call_block st cname params =
   let fresh_params = List.map (fun _ -> Var.fresh ()) params in
   let ret = Var.fresh () in
@@ -211,6 +221,7 @@ let add_call_block st cname params =
   addr
 
 let cps_branch st k kf cont =
+  let cont = filter_cont_params st cont in
   let caddr = fst cont in
   let params = k :: kf :: snd cont in
   try
@@ -301,7 +312,8 @@ let cps_alloc_stack
 let cps_last st (k: Var.t) (kf: Var.t) (last: last): instr list * last =
   let (@>) instrs1 (instrs2, last) = (instrs1 @ instrs2, last) in
   let cps_cont (pc, args) = (pc, k :: kf :: args) in
-  let cps_jump_cont (pc, args) =
+  let cps_jump_cont cont =
+    let pc, args = filter_cont_params st cont in
     let args = k :: kf :: args in
     try
       let cname = IntMap.find pc st.jc.closure_of_jump in
