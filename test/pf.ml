@@ -1,2 +1,2 @@
 let x =
-  Printf.printf "slt\n"
+  Printf.printf "slt %d\n" 3
