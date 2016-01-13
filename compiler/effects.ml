@@ -81,12 +81,12 @@ let dominated_by_node (g: graph): AddrSet.t IntMap.t =
     let rec loop node visited =
       let visited = AddrSet.add node visited in
       try
-        let succs = IntMap.find node g.succs |> AddrSet.filter ((<>) v) in
+        let succs = AddrSet.diff (IntMap.find node g.succs) visited in
         AddrSet.fold loop succs visited
       with Not_found ->
         visited
     in
-    loop g.root AddrSet.empty
+    loop g.root (AddrSet.singleton v)
   in
 
   let all_nodes =
