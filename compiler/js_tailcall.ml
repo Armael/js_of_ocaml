@@ -139,6 +139,16 @@ module Tramp : TC = struct
       not (VarMap.exists (fun v _ -> VarSet.mem v tc) !m2new)
     in
 
+    Printf.eprintf ">> Js_tailcall.rewrite\n";
+    List.iter (fun (v, _, _, req_tc, cont_tc, is_cont) ->
+      Printf.eprintf "v%d: req_tc:" (Var.idx v);
+      VarSet.iter (fun c -> Printf.eprintf " v%d" (Var.idx c)) req_tc;
+      Printf.eprintf " cont_tc:";
+      VarSet.iter (fun c -> Printf.eprintf " v%d" (Var.idx c)) cont_tc;
+      Printf.eprintf " is_cont: %b" is_cont;
+      Printf.eprintf "\n";
+    ) cls;
+    
     match cls with
     | [x,_cl,_,req_tc,cont_tc,is_cont] when
         is_ident_rewrite x req_tc cont_tc ->
@@ -193,6 +203,11 @@ module Tramp : TC = struct
     Printf.eprintf "counter: v%d " (Var.idx counter);
     Printf.eprintf "to_wrap:"; List.iter (fun (v,_,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) to_wrap;
     Printf.eprintf " not_to_wrap:"; List.iter (fun (v,_,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) not_to_wrap;
+    Printf.eprintf "\n";
+    
+    Printf.eprintf "counter: v%d " (Var.idx counter);
+    Printf.eprintf "to_wrap:"; List.iter (fun (v,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) to_wrap;
+    Printf.eprintf " not_to_wrap:"; List.iter (fun (v,_,_,_,_) -> Printf.eprintf " v%d" (Var.idx v)) not_to_wrap;
     Printf.eprintf "\n";
     
     counters := List.fold_left (fun counters (v,_,_,_,_,_) ->
