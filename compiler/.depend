@@ -33,8 +33,8 @@ driver.cmx : varPrinter.cmx util.cmx tailcall.cmx specialize_js.cmx \
     javascript.cmx inline.cmx generate.cmx flow.cmx eval.cmx effects.cmx \
     compiler_version.cmx code.cmx driver.cmi
 driver.cmi : source_map.cmi pretty_print.cmi parse_bytecode.cmi code.cmi
-effects.cmo : code.cmi effects.cmi
-effects.cmx : code.cmx effects.cmi
+effects.cmo : util.cmi code.cmi effects.cmi
+effects.cmx : util.cmx code.cmx effects.cmi
 effects.cmi : code.cmi
 eval.cmo : jsoo_primitive.cmi flow.cmi code.cmi eval.cmi
 eval.cmx : jsoo_primitive.cmx flow.cmx code.cmx eval.cmi
@@ -48,11 +48,13 @@ freevars.cmo : util.cmi option.cmi code.cmi freevars.cmi
 freevars.cmx : util.cmx option.cmx code.cmx freevars.cmi
 freevars.cmi : util.cmi code.cmi
 generate.cmo : util.cmi parse_js.cmi parse_info.cmi parse_bytecode.cmi \
-    option.cmi jsoo_subst.cmi jsoo_primitive.cmi js_tailcall.cmi js_simpl.cmi \
-    javascript.cmi freevars.cmi code.cmi generate.cmi
+    option.cmi jsoo_subst.cmi jsoo_primitive.cmi js_traverse.cmi \
+    js_tailcall.cmi js_simpl.cmi javascript.cmi freevars.cmi effects.cmi \
+    code.cmi generate.cmi
 generate.cmx : util.cmx parse_js.cmx parse_info.cmx parse_bytecode.cmx \
-    option.cmx jsoo_subst.cmx jsoo_primitive.cmx js_tailcall.cmx js_simpl.cmx \
-    javascript.cmx freevars.cmx code.cmx generate.cmi
+    option.cmx jsoo_subst.cmx jsoo_primitive.cmx js_traverse.cmx \
+    js_tailcall.cmx js_simpl.cmx javascript.cmx freevars.cmx effects.cmx \
+    code.cmx generate.cmi
 generate.cmi : parse_bytecode.cmi javascript.cmi code.cmi
 inline.cmo : util.cmi option.cmi jsoo_primitive.cmi code.cmi inline.cmi
 inline.cmx : util.cmx option.cmx jsoo_primitive.cmx code.cmx inline.cmi
@@ -94,9 +96,9 @@ jsoo_subst.cmo : util.cmi code.cmi jsoo_subst.cmi
 jsoo_subst.cmx : util.cmx code.cmx jsoo_subst.cmi
 jsoo_subst.cmi : code.cmi
 js_output.cmo : util.cmi source_map.cmi pretty_print.cmi parse_info.cmi \
-    option.cmi json.cmi javascript.cmi js_output.cmi
+    option.cmi json.cmi javascript.cmi code.cmi js_output.cmi
 js_output.cmx : util.cmx source_map.cmx pretty_print.cmx parse_info.cmx \
-    option.cmx json.cmx javascript.cmx js_output.cmi
+    option.cmx json.cmx javascript.cmx code.cmx js_output.cmi
 js_output.cmi : source_map.cmi pretty_print.cmi javascript.cmi
 js_parser.cmo : parse_info.cmi js_token.cmi javascript.cmi js_parser.cmi
 js_parser.cmx : parse_info.cmx js_token.cmx javascript.cmx js_parser.cmi
