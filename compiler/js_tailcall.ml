@@ -229,7 +229,15 @@ module Tramp : TC = struct
     let make binds =
       J.Variable_statement
          (List.map (fun (name, ex) -> J.V (name), Some (ex, J.N)) binds) in
-    make (not_wrapped@reals@wrappers)
+    let res =
+      make (not_wrapped@reals@wrappers) in
+    (* cleanup *)
+    List.iter (fun (v,_,_,_,_) ->
+      let v' = VarMap.find v !m2new in
+      _m2old := VarMap.remove v' !_m2old;
+      m2new := VarMap.remove v !m2new
+    ) cls;
+    res
 
 end
 
