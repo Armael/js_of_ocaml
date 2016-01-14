@@ -53,24 +53,45 @@ let specialize_instr info (acc,free_pc,extra) i =
         | None -> i::acc,free_pc,extra
         | Some n when n = n' -> Let (x, Apply (f, l, true))::acc,free_pc,extra
         | Some n when n < n' ->
-          let v = Code.Var.fresh () in
-          let args,rest = Util.take n l in
-          (Let(v, Apply(f,args,true)))
-          ::(Let(x,Apply(v,rest,false)))
-          ::acc,free_pc,extra
+          assert (n >= 3);
+          let k', f' = Code.Var.(fresh (), fresh ()) in
+          let k = List.nth l 0 in
+          let kf = List.nth l 1 in
+          let args, rest = Util.take n l in
+          let args, rest = k' :: (List.tl args), k :: kf :: rest in
+
+          let block =
+            let g = Code.Var.fresh () in
+            let ret = Code.Var.fresh () in
+            { params = [g];
+              body = [Let (ret, Apply (g, rest, false))];
+              branch = Return ret;
+              handler = None;
+            } in
+          (Let (k', Closure ([f'], (free_pc, [f']))))
+          ::(Let (x, Apply (f, args, true)))
+          ::acc, (free_pc + 1), (free_pc, block) :: extra
         | Some n when n > n' ->
-          let missing = Array.init (n - n') (fun _ -> Code.Var.fresh ()) in
+          assert (n >= 3);
+          let f' = Code.Var.fresh () in
+          let k = List.nth l 0 in
+          let _, l_rest = Util.take 2 l in
+          let missing = Array.init (n - n' + 2) (fun _ -> Code.Var.fresh ()) in
           let missing = Array.to_list missing in
           let block =
-            let params' = Array.init (n - n') (fun _ -> Code.Var.fresh ()) in
+            let params' = Array.init (n - n' + 2) (fun _ -> Code.Var.fresh ()) in
             let params' = Array.to_list params' in
             let return' = Code.Var.fresh () in
-            { params=params';
-              body = [Let(return',Apply(f,l@params',true))];
+            let params_k, params_rest = Util.take 2 params' in
+            let args = params_k @ l_rest @ params_rest in
+            { params = params';
+              body = [Let(return',Apply(f,args,true))];
               branch = Return return';
               handler = None;
             } in
-          Let(x, Closure(missing,(free_pc,missing)))::acc,(free_pc + 1),(free_pc,block)::extra
+          (Let(f', Closure(missing,(free_pc,missing))))
+          ::(Let(x, Apply(k, [f'], true)))
+          ::acc,(free_pc + 1),(free_pc,block)::extra
         | _ -> i::acc, free_pc,extra
     end
     | _ ->

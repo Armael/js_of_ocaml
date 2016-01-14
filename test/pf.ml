@@ -1,2 +1,2 @@
 let x =
-  Printf.printf "slt %d\n" 3
+  Printf.printf "slt %s %d %f %c\n" "abc" 3 4. 'a'
