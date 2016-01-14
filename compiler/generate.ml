@@ -945,12 +945,10 @@ let rec group_closures_rec closures req =
   match closures with
     [] ->
       ([], VarSet.empty)
-  | ((var, vars, req_tc, cont_tc, _clo) as elt) :: rem ->
+  | ((var, vars, req_tc, cont_tc, is_cont, _clo) as elt) :: rem ->
     let req = VarSet.union vars req in
     let req = VarSet.union req req_tc in
-    let req = match cont_tc with
-      | None -> req
-      | Some s -> VarSet.union req s in
+    let req = VarSet.union req cont_tc in
       let (closures', prov) = group_closures_rec rem req in
       match closures' with
       | [] ->
@@ -1004,18 +1002,8 @@ let rec collect_closures ctx l =
           conts_tc' >> VarSet.union x_conts_tc >> VarSet.union req_tc
         else
           conts_tc' in
-      let x_conts_tc =
-        if x_is_cont then
-          (* x is a continuation; and we do not care of continuations
-             of continuations *)
-          None
-        else
-          (* x is not a continuation: we store the tailcalls of all
-             its continuations and continuations of continuations,
-             etc. *)
-          Some x_conts_tc in
-      
-      ((x, vars, req_tc, x_conts_tc, cl) :: l', conts_tc', rem')
+
+      ((x, vars, req_tc, x_conts_tc, x_is_cont, cl) :: l', conts_tc', rem')
   | _ ->
     ([], VarSet.empty, l)
 
@@ -1241,7 +1229,7 @@ and translate_closures ctx expr_queue l loc =
   match l with
     [] ->
       ([], expr_queue)
-  | [(x, vars, req_tc, cont_tc, cl)] :: rem ->
+  | [(x, vars, req_tc, cont_tc, is_cont, cl)] :: rem ->
       let vars =
         vars
         >> VarSet.elements
@@ -1250,7 +1238,7 @@ and translate_closures ctx expr_queue l loc =
       let prim name = Share.get_prim s_var name ctx.Ctx.share in
       
       let thunk = (fun () ->
-        let defs = Js_tailcall.rewrite [x,cl,loc,req_tc,cont_tc] prim in
+        let defs = Js_tailcall.rewrite [x,cl,loc,req_tc,cont_tc,is_cont] prim in
         let rec return_last x = function
           (* | [] -> [J.Statement (J.Return_statement (Some (J.EVar (J.V x)))),J.N] *)
           | J.Variable_statement l as sts  ->
@@ -1275,8 +1263,7 @@ and translate_closures ctx expr_queue l loc =
       ) in
 
       let statements =
-        match cont_tc with
-        | None ->
+        if is_cont then
           (* This is a continuation. Its tailcalls will be rewritten
              by the call to [Js_tailcall.rewrite] on its (non
              continuation) parent.
@@ -1284,7 +1271,7 @@ and translate_closures ctx expr_queue l loc =
              If it doesn't have a parent (toplevel continuation), it
              will be evaluated by [compile_program]. *)
           J.Suspended_statement thunk
-        | Some _ ->
+        else
           (* Not a continuation. We rewrite its tailcalls now, along
              with the ones of its continuations and sub
              continuations. *)
@@ -1303,9 +1290,9 @@ and translate_closures ctx expr_queue l loc =
       (st @ st', expr_queue)
   | l :: rem ->
       let names =
-        List.fold_left (fun s (x, _, _, _, _) -> VarSet.add x s) VarSet.empty l in
+        List.fold_left (fun s (x, _, _, _, _, _) -> VarSet.add x s) VarSet.empty l in
       let vars =
-        List.fold_left (fun s (_, s', _, _, _) -> VarSet.union s s') VarSet.empty l
+        List.fold_left (fun s (_, s', _, _, _, _) -> VarSet.union s s') VarSet.empty l
       in
       let vars =
         VarSet.diff vars names
@@ -1313,7 +1300,8 @@ and translate_closures ctx expr_queue l loc =
         >> List.map (fun v -> J.V v)
       in
       let defs' =
-        List.map (fun (x, _, req_tc, cont_tc, cl) -> (x, cl, loc, req_tc, cont_tc)) l in
+        List.map (fun (x, _, req_tc, cont_tc, is_cont, cl) ->
+          (x, cl, loc, req_tc, cont_tc, is_cont)) l in
       let prim name = Share.get_prim s_var name ctx.Ctx.share in
       let defs = Js_tailcall.rewrite defs' prim in
       let statements =
@@ -1323,11 +1311,11 @@ and translate_closures ctx expr_queue l loc =
           Var.name tbl "funenv";
           let arr =
             J.EArr
-              (List.map (fun (x, _, _, _, _) -> Some (J.EVar (J.V x))) l)
+              (List.map (fun (x, _, _, _, _, _) -> Some (J.EVar (J.V x))) l)
           in
           let assgn =
             List.fold_left
-              (fun (l, n) (x, _, _, _, _) ->
+              (fun (l, n) (x, _, _, _, _, _) ->
                  ((J.V x,
                    Some (J.EAccess (J.EVar (J.V tbl), int n), loc)) :: l,
                   n + 1))
