@@ -23,11 +23,11 @@ lib/%: %
 
 OBJS=compiler_version.cmx \
      util.cmx pretty_print.cmx option.cmx reserved.cmx varPrinter.cmx \
-     dgraph.cmx code.cmx effects.cmx javascript.cmx json.cmx vlq64.cmx source_map.cmx \
+     dgraph.cmx code.cmx javascript.cmx json.cmx vlq64.cmx source_map.cmx \
      js_output.cmx js_simpl.cmx parse_info.cmx js_token.cmx js_parser.cmx \
      js_lexer.cmx parse_js.cmx jsoo_primitive.cmx annot_parser.cmx annot_lexer.cmx \
      instr.cmx jsoo_subst.cmx pure_fun.cmx jsoo_deadcode.cmx \
-     flow.cmx specialize.cmx specialize_js.cmx eval.cmx inline.cmx \
+     flow.cmx effects.cmx specialize.cmx specialize_js.cmx eval.cmx inline.cmx \
      tailcall.cmx freevars.cmx phisimpl.cmx \
      js_traverse.cmx js_assign.cmx js_tailcall.cmx \
      linker.cmx parse_bytecode.cmx generate.cmx driver.cmx \

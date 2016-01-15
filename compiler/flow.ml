@@ -29,7 +29,7 @@ open Code
 
 let add_var = VarISet.add
 
-type def = Phi of VarSet.t | Expr of Code.expr | Param
+type def = Phi of VarSet.t | Expr of Code.expr | Param | FromOtherStack
 
 type info = {
   info_defs:def array;
@@ -48,16 +48,20 @@ let is_undefined d = match d with Phi s -> VarSet.is_empty s | _ -> false
 
 let add_expr_def defs x e =
   let idx = Var.idx x in
-  (* Var.print Format.err_formatter x; *)
-  (* Format.fprintf Format.err_formatter "\n%!"; *)
+  Var.print Format.err_formatter x;
+  Format.fprintf Format.err_formatter "\n%!";
   assert (is_undefined defs.(idx));
   defs.(idx) <- Expr e
+
+let add_effect_def defs x =
+  let idx = Var.idx x in
+  defs.(idx) <- FromOtherStack
 
 let add_assign_def vars defs x y =
   add_var vars x;
   let idx = Var.idx x in
   match defs.(idx) with
-    Expr _ | Param ->
+    Expr _ | Param | FromOtherStack ->
     Format.eprintf ">> v%d\n%!" idx;
     assert false
   | Phi s  ->
@@ -99,41 +103,56 @@ let expr_deps blocks vars deps defs x e =
   | Field (y, _) ->
       add_dep deps x y
 
+let block_deps blocks vars deps defs block =
+  List.iter
+    (fun i ->
+       match i with
+         Let (x, e) ->
+         add_var vars x;
+         add_expr_def defs x e;
+         expr_deps blocks vars deps defs x e
+       | Set_field _ | Array_set _ | Offset_ref _ ->
+         ())
+    block.body;
+  Util.opt_iter
+    (fun (x, cont) ->
+       add_param_def vars defs x;
+       cont_deps blocks vars deps defs cont)
+    block.handler;
+  match block.branch with
+    Return _ | Raise _ | Stop | Delegate _ ->
+    ()
+  | Branch cont | Poptrap cont ->
+    cont_deps blocks vars deps defs cont
+  | Cond (_, _, cont1, cont2) ->
+    cont_deps blocks vars deps defs cont1;
+    cont_deps blocks vars deps defs cont2
+  | Switch (_, a1, a2) ->
+    Array.iter (fun cont -> cont_deps blocks vars deps defs cont) a1;
+    Array.iter (fun cont -> cont_deps blocks vars deps defs cont) a2
+  | Pushtrap (cont, _, _, _) ->
+    cont_deps blocks vars deps defs cont
+  | Resume (x, _, cont_opt) ->
+    add_var vars x;
+    add_effect_def defs x;
+    Util.opt_iter (fun cont -> cont_deps blocks vars deps defs cont) cont_opt
+  | Perform (x, _, cont) ->
+    add_var vars x;
+    add_effect_def defs x;
+    cont_deps blocks vars deps defs cont
+  | LastApply (x, (f, args, b), cont_opt) ->
+    add_var vars x;
+    add_expr_def defs x (Apply (f, args, b));
+    expr_deps blocks vars deps defs x (Apply (f, args, b));
+    Util.opt_iter (fun cont -> cont_deps blocks vars deps defs cont) cont_opt
+
 let program_deps (_, blocks, _) =
   let nv = Var.count () in
   let vars = VarISet.empty () in
   let deps = Array.make nv VarSet.empty in
   let defs = Array.make nv undefined in
   AddrMap.iter
-    (fun _ block ->
-       List.iter
-         (fun i ->
-            match i with
-              Let (x, e) ->
-                add_var vars x;
-                add_expr_def defs x e;
-                expr_deps blocks vars deps defs x e
-            | Set_field _ | Array_set _ | Offset_ref _ ->
-                ())
-         block.body;
-       Util.opt_iter
-         (fun (x, cont) ->
-            add_param_def vars defs x;
-            cont_deps blocks vars deps defs cont)
-         block.handler;
-       match block.branch with
-         Return _ | Raise _ | Stop ->
-           ()
-       | Branch cont | Poptrap cont ->
-           cont_deps blocks vars deps defs cont
-       | Cond (_, _, cont1, cont2) ->
-           cont_deps blocks vars deps defs cont1;
-           cont_deps blocks vars deps defs cont2
-       | Switch (_, a1, a2) ->
-           Array.iter (fun cont -> cont_deps blocks vars deps defs cont) a1;
-           Array.iter (fun cont -> cont_deps blocks vars deps defs cont) a2
-       | Pushtrap (cont, _, _, _) ->
-           cont_deps blocks vars deps defs cont)
+    (fun _ block -> block_deps blocks vars deps defs block)
     blocks;
   (vars, deps, defs)
 
@@ -142,7 +161,7 @@ let var_set_lift f s =
 
 let propagate1 deps defs st x =
   match defs.(Var.idx x) with
-    Param ->
+    Param | FromOtherStack ->
       VarSet.singleton x
   | Phi s ->
       var_set_lift (fun y -> VarTbl.get st y) s
@@ -159,7 +178,7 @@ let propagate1 deps defs st x =
                    let t = a.(n) in
                    add_dep deps x t;
                    VarTbl.get st t
-               | Phi _ | Param | Expr _ ->
+               | Phi _ | Param | Expr _ | FromOtherStack ->
                    VarSet.empty)
             (VarTbl.get st y)
 
@@ -281,8 +300,15 @@ let program_escape defs known_origins (_, blocks, _) =
          block.body;
        match block.branch with
          Return x | Raise x ->
-           block_escape st x
-       | Stop | Branch _ | Cond _ | Switch _ | Pushtrap _ | Poptrap _ ->
+         block_escape st x
+       (* todo? *)
+       | Resume (_, (x, y, z), _) ->
+         block_escape st x; block_escape st y; block_escape st z
+       | Perform (_, x, _) ->
+         block_escape st x
+       | Delegate (x, y) ->
+         block_escape st x; block_escape st y
+       | Stop | Branch _ | Cond _ | Switch _ | Pushtrap _ | Poptrap _ | LastApply _ ->
            ())
     blocks;
   possibly_mutable
@@ -291,7 +317,7 @@ let program_escape defs known_origins (_, blocks, _) =
 
 let propagate2 ?(skip_param=false) defs known_origins possibly_mutable st x =
   match defs.(Var.idx x) with
-    Param -> skip_param
+    Param | FromOtherStack -> skip_param
   | Phi s ->
       VarSet.exists (fun y -> VarTbl.get st y) s
   | Expr e ->
@@ -310,7 +336,7 @@ let propagate2 ?(skip_param=false) defs known_origins possibly_mutable st x =
                  possibly_mutable.(Var.idx z)
                  ||
                  VarTbl.get st a.(n)
-               | Phi _ | Param | Expr _ ->
+               | Phi _ | Param | Expr _ | FromOtherStack ->
                  true)
             (VarTbl.get known_origins y)
 
@@ -424,6 +450,17 @@ let build_subst info  vars =
   subst
 
 (****)
+
+let f_block ?acc blocks block =
+  let vars, deps, defs =
+    match acc with
+    | None ->
+      let nv = Var.count () in
+      (VarISet.empty (), Array.make nv VarSet.empty, Array.make nv undefined)
+    | Some acc -> acc
+  in
+  block_deps blocks vars deps defs block;
+  vars, deps, defs
 
 let f ?skip_param p =
   let t = Util.Timer.make () in

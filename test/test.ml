@@ -101,17 +101,17 @@ let test_ifs =
 let test_loops =
   "loops" >::: [
     "loop1" >:: (fun ctxt ->
-      assert_bool "loops"
+      assert_bool "doesn't loop"
         (loops ~foutput:(starts_with "1\n2\n3\n4\n") "loop1"));
     "loop0" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "012345678910\n") "loop0");
     "loop" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "0.1.2.3.4.5.6.7.8.9.10.\n") "loop");
     "while" >:: (fun ctxt ->
-      assert_bool "loops"
+      assert_bool "doesn't loop"
         (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "while"));
     "while1" >:: (fun ctxt ->
-      assert_bool "loops"
+      assert_bool "doesn't loop"
         (loops ~foutput:(starts_with ".\n-\n.\n-\n.\n-") "while1"));
     "looploop" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "12345678910111213141516171819202345678910111213141516171819202134567891011121314151617181920212245678910111213141516171819202122235678910111213141516171819202122232467891011121314151617181920212223242578910111213141516171819202122232425268910111213141516171819202122232425262791011121314151617181920212223242526272810111213141516171819202122232425262728291112131415161718192021222324252627282930\n") "looploop");
@@ -120,12 +120,12 @@ let test_loops =
 let test_recursion =
   "recursion" >::: [
     "rec" >:: (fun ctxt ->
-      assert_bool "loops"
+      assert_bool "doesn't loop"
         (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "rec"));
     "mr" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(ends_with "3\n4\n3\n4\n3\n4\n3\n4\n3\n4\n3\n4\n3\n") "mr");
     "mr0" >:: (fun ctxt ->
-      assert_bool "loops"
+      assert_bool "doesn't loop"
         (loops ~foutput:(starts_with "3\n4\n3\n4\n3\n4\n3\n4\n3\n4\n3\n4\n3\n") "mr0"));
   ]
 
@@ -144,12 +144,13 @@ let test_exn =
       assert_js ~ctxt ~use_stderr:true ~exit_code:(Unix.WEXITED 8)
         ~foutput:(ends_with "Failure,-3,abc\n") "raise");
     "exn3" >:: (fun ctxt ->
+      assert_bool "loops" (not (loops "exn3"));
       assert_js ~ctxt ~foutput:(is_str "2\n") "exn3");
     "ex9" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "1\n") "ex9");
-    "loopexn" >:: (fun ctxt ->
-      assert_bool "loops"
-        (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "loopexn"));
+    (* "loopexn" >:: (fun ctxt -> *)
+    (*   assert_bool "doesn't loop" *)
+    (*     (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "loopexn")); *)
   ]
 
 let tests =

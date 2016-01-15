@@ -66,22 +66,25 @@ function caml_call_gen(f, args) {
     return f.apply(null, args);
   } else if (d < 0) {
     var k = args[0];
-    var kf = args[1];
-    var rest = new Array(argsLen - n + 2);
+    var kx = args[1];
+    var kf = args[2];
+    var rest = new Array(argsLen - n + 3);
     rest[0] = k;
-    rest[1] = kf;
-    for(var i = n; i < argsLen; i++) rest[i-n+2] = args[i];
+    rest[1] = kx;
+    rest[2] = kf;
+    for(var i = n; i < argsLen; i++) rest[i-n+3] = args[i];
     var a = new Array(n);
     a[0] = function (x){ return caml_call_gen(x, rest); };
     for(var i = 1; i < n; i++) a[i] = args[i];
     return f.apply(null, a);
   } else {
     var k = args[0];
-    return k(function (k2, kf2, x) {
+    return k(function (k2, kx2, kf2, x) {
         var a = new Array(argsLen+1);
         a[0] = k2;
-        a[1] = kf2;
-        for(var i = 2; i < argsLen; i++) a[i] = args[i];
+        a[1] = kx2;
+        a[2] = kf2;
+        for(var i = 3; i < argsLen; i++) a[i] = args[i];
         a[argsLen] = x;
         return caml_call_gen(f, a);
     });

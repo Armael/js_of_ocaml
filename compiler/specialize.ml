@@ -53,13 +53,14 @@ let specialize_instr info (acc,free_pc,extra) i =
         | None -> i::acc,free_pc,extra
         | Some n when n = n' -> Let (x, Apply (f, l, true))::acc,free_pc,extra
         | Some n when n < n' ->
-          assert (n >= 3);
+          assert (n >= 4);
           let k', f' = Code.Var.(fresh (), fresh ()) in
           let k = List.nth l 0 in
-          let kf = List.nth l 1 in
+          let kx = List.nth l 1 in
+          let kf = List.nth l 2 in
           let args, rest = Util.take n l in
-          let args, rest = k' :: (List.tl args), k :: kf :: rest in
-
+          let args, rest = k' :: (List.tl args), k :: kx :: kf :: rest in
+ 
           let block =
             let g = Code.Var.fresh () in
             let ret = Code.Var.fresh () in
@@ -72,17 +73,17 @@ let specialize_instr info (acc,free_pc,extra) i =
           ::(Let (x, Apply (f, args, true)))
           ::acc, (free_pc + 1), (free_pc, block) :: extra
         | Some n when n > n' ->
-          assert (n >= 3);
+          assert (n >= 4);
           let f' = Code.Var.fresh () in
           let k = List.nth l 0 in
-          let _, l_rest = Util.take 2 l in
-          let missing = Array.init (n - n' + 2) (fun _ -> Code.Var.fresh ()) in
+          let _, l_rest = Util.take 3 l in
+          let missing = Array.init (n - n' + 3) (fun _ -> Code.Var.fresh ()) in
           let missing = Array.to_list missing in
           let block =
-            let params' = Array.init (n - n' + 2) (fun _ -> Code.Var.fresh ()) in
+            let params' = Array.init (n - n' + 3) (fun _ -> Code.Var.fresh ()) in
             let params' = Array.to_list params' in
             let return' = Code.Var.fresh () in
-            let params_k, params_rest = Util.take 2 params' in
+            let params_k, params_rest = Util.take 3 params' in
             let args = params_k @ l_rest @ params_rest in
             { params = params';
               body = [Let(return',Apply(f,args,true))];

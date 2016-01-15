@@ -432,7 +432,7 @@ type profile = Code.program -> Code.program
 
 let f ?(standalone=true) ?(wrap_with_fun=false) ?(profile=o1) ?toplevel ?linkall ?source_map formatter d =
   configure formatter >>
-  (* print >> *)
+  print >>
   Effects.f >>
   profile >>
   deadcode' >>
