@@ -19,6 +19,11 @@
 
 ///////////// Core
 
+//Provides: caml_unhandled_effect
+function caml_unhandled_effect (e) {
+  throw ["unhandled effect", e];
+}
+
 //Provides: raw_array_sub
 function raw_array_sub (a,i,l) {
   var b = new Array(l);

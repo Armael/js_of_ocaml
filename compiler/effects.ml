@@ -523,11 +523,11 @@ let toplevel_kx () =
 
 let toplevel_kf () =
   let x, x' = Var.fresh (), Var.fresh () in
-  (* TODO *)
+  let ret = Var.fresh () in
   { params = [x; x'];
     handler = None;
-    body = [];
-    branch = Return x;
+    body = [Let (ret, Prim (Extern "caml_unhandled_effect", [Pv x]))];
+    branch = Return ret;
   }
 
 let alloc_stack_k hv k kx kf =
