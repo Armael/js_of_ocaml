@@ -803,6 +803,11 @@ let nop (start, blocks, free_pc) =
   let blocks = AddrMap.map nop_block blocks in
   (start, blocks, free_pc)
 
+let pr_graph ((start, blocks, _) as p) =
+  let g = build_graph blocks start in
+  print_graph blocks g;
+  p
+
 let f ((start, blocks, free_pc): Code.program): Code.program =
   let (jc, en, db, does) :
     jump_closures *

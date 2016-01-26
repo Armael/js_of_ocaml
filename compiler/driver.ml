@@ -443,6 +443,7 @@ let f ?(standalone=true) ?(wrap_with_fun=false) ?(profile=o1) ?toplevel ?linkall
   (*     fv; *)
   (*   Format.eprintf " <<\n%!"; *)
   (*   (p, a)) >> *)
+  (* (fun (p, a) -> ignore (Effects.pr_graph p); (p, a)) >> *)
 
   generate d ?toplevel >>
   (fun p ->

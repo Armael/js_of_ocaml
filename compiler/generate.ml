@@ -945,7 +945,7 @@ let rec group_closures_rec closures req =
   match closures with
     [] ->
       ([], VarSet.empty)
-  | ((var, vars, req_tc, cont_tc, is_cont, _clo) as elt) :: rem ->
+  | ((var, vars, req_tc, cont_tc, _is_cont, _clo) as elt) :: rem ->
     let req = VarSet.union vars req in
     let req = VarSet.union req req_tc in
     let req = VarSet.union req cont_tc in
