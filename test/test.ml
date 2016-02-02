@@ -70,6 +70,12 @@ let test_pure =
     "pf: also printf" >:: (fun ctxt ->
       assert_js ~ctxt
         ~foutput:(is_str "slt abc 3 4.000000 a\n") "pf");
+    "apply" >:: (fun ctxt ->
+      assert_js ~ctxt
+        ~foutput:(is_str "a\nb\nc\n") "apply");
+    "apply2" >:: (fun ctxt ->
+      assert_js ~ctxt
+        ~foutput:(is_str "a\nb\nc\na\nd\ne\n") "apply2");
   ]
 
 let test_effects =
@@ -148,9 +154,11 @@ let test_exn =
       assert_js ~ctxt ~foutput:(is_str "2\n") "exn3");
     "ex9" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "1\n") "ex9");
-    (* "loopexn" >:: (fun ctxt -> *)
-    (*   assert_bool "doesn't loop" *)
-    (*     (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "loopexn")); *)
+    "exn4" >:: (fun ctxt ->
+      assert_js ~ctxt ~use_stderr:true ~foutput:(is_str "18\n") "exn4");
+    "loopexn" >:: (fun ctxt ->
+      assert_bool "doesn't loop"
+        (loops ~foutput:(starts_with ".\n.\n.\n.\n.") "loopexn"));
   ]
 
 let tests =
