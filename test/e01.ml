@@ -1,4 +1,4 @@
 effect E : unit
 
 let x =
-  try 3 with effect E k -> 4
+  print_int (try 3 with effect E k -> 4)

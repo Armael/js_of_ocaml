@@ -1,3 +1,5 @@
 let rec f () =
-  print_int 3;
+  print_endline ".";
   f ()
+
+let _ = f ()
