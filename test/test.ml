@@ -94,6 +94,8 @@ let test_effects =
       assert_js ~ctxt ~foutput:(is_str "hf1\nhf1\nhv\nhf2\nhf2\n") "e5");
     "e6" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "42\n") "e6");
+    "MVar_test" >:: (fun ctxt ->
+      assert_js ~ctxt ~foutput:(ends_with "After put: 100\n") "MVar_test");
   ]
 
 let test_ifs =
