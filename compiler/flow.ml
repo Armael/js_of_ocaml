@@ -98,7 +98,7 @@ let expr_deps blocks vars deps defs x e =
   | Closure (l, cont) ->
       List.iter (fun x -> add_param_def vars defs x) l;
       cont_deps blocks vars deps defs cont
-  | Block (_, a) ->
+  | Block (_, a) | JSArray a ->
       Array.iter (fun y -> add_dep deps x y) a
   | Field (y, _) ->
       add_dep deps x y
@@ -168,7 +168,7 @@ let propagate1 deps defs st x =
   | Expr e ->
       match e with
         Const _ | Constant _  | Apply _ | Prim _
-      | Closure _ | Block _ ->
+      | Closure _ | Block _ | JSArray _ ->
           VarSet.singleton x
       | Field (y, n) ->
           var_set_lift
@@ -222,7 +222,7 @@ let rec block_escape st x =
 
 let expr_escape st _x e =
   match e with
-    Const _ | Constant _ | Closure _ | Block _ | Field _ ->
+    Const _ | Constant _ | Closure _ | Block _ | JSArray _ | Field _ ->
       ()
   | Apply (_, l, _) ->
       List.iter (fun x -> block_escape st x) l
@@ -322,7 +322,7 @@ let propagate2 ?(skip_param=false) defs known_origins possibly_mutable st x =
       VarSet.exists (fun y -> VarTbl.get st y) s
   | Expr e ->
       match e with
-        Const _ | Constant _ | Closure _ | Apply _ | Prim _ | Block _ ->
+        Const _ | Constant _ | Closure _ | Apply _ | Prim _ | Block _ | JSArray _ ->
           false
       | Field (y, n) ->
           VarTbl.get st y

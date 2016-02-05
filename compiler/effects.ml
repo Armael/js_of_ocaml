@@ -550,9 +550,17 @@ let alloc_stack_kf hf k kx kf =
 
 let alloc_stack k kx kf =
   let f, x, ret = Var.fresh (), Var.fresh (), Var.fresh () in
+  let body =
+    (* let ret' = Var.fresh () in *)
+    (* if tramp then *)
+    (*   [Let (ret', Apply (f, [k; kx; kf; x], true)); *)
+    (*    Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))] *)
+    (* else *)
+      [Let (ret, Apply (f, [k; kx; kf; x], true))]
+  in
   { params = [f; x];
     handler = None;
-    body = [Let (ret, Apply (f, [k; kx; kf; x], true))];
+    body;
     branch = Return ret;
   }
 
@@ -567,7 +575,8 @@ let cps_alloc_stack
   let stack_k_addr = add_block st (alloc_stack_k hv id kx kf) in
   let stack_kx_addr = add_block st (alloc_stack_kx hx id kx kf) in
   let stack_kf_addr = add_block st (alloc_stack_kf hf id kx kf) in
-  let stack_addr = add_block st (alloc_stack stack_k stack_kx stack_kf) in
+  let stack_addr =
+    add_block st (alloc_stack stack_k stack_kx stack_kf) in
   [Let (id, Closure ([v1], (id_addr, [v1])));
    Let (stack_k, Closure ([v2], (stack_k_addr, [v2])));
    Let (stack_kx, Closure ([v3], (stack_kx_addr, [v3])));
@@ -681,7 +690,9 @@ let cps_last
     let old_kx = AddrMap.find (fst cont) st.kx_of_poptrap in
     cps_branch st block_addr k old_kx kf cont
   | Resume (ret, (stack, func, args), cont_opt) ->
-    [Let (ret, Apply (stack, [func; args], true))] @>
+    let ret' = Var.fresh () in
+    [Let (ret', Apply (stack, [func; args], true));
+     Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))] @>
     begin match cont_opt with
       | None ->
         cps_return ret
@@ -695,13 +706,16 @@ let cps_last
     let kfret = Var.fresh () in
     let cur_k, cur_k_closure = closure_of_cont' [ret] cont in
     let stack = add_block st (alloc_stack cur_k kx kf) in
+    let kf_args = Var.fresh () in
     [Let (cur_k, cur_k_closure);
      Let (cur_stack, Closure ([f; v], (stack, [f; v])));
-     Let (kfret, Apply (kf, [eff; cur_stack], true))],
+     Let (kf_args, JSArray [|eff; cur_stack|]);
+     Let (kfret, Prim (Extern "caml_trampoline_return", [Pv kf; Pv kf_args]))],
     Return kfret
   | Delegate (eff, stack) ->
-    let kfret = Var.fresh () in
-    [Let (kfret, Apply (kf, [eff; stack], true))],
+    let kfret, kf_args = fresh2 () in
+    [Let (kf_args, JSArray [|eff; stack|]);
+     Let (kfret, Prim (Extern "caml_trampoline_return", [Pv kf; Pv kf_args]))],
     Return kfret
   | LastApply (ret, (f, args, full), cont_opt) ->
     begin match cont_opt with

@@ -28,6 +28,8 @@ let expr s e =
       Apply (s f, List.map (fun x -> s x) l, n)
   | Block (n, a) ->
       Block (n, Array.map (fun x -> s x) a)
+  | JSArray a ->
+      JSArray (Array.map (fun x -> s x) a)
   | Field (x, n) ->
       Field (s x, n)
   | Closure (l, pc) ->

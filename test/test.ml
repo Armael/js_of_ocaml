@@ -1,7 +1,7 @@
 open OUnit2
 open Batteries
 
-let runjs = "nodejs"
+let runjs = "node"
 
 let is_str s stream =
   assert_equal s (Stream.to_string stream)
@@ -140,7 +140,7 @@ let test_recursion =
 let test_exn =
   "exceptions" >::: [
     "mwe: match w/ exception; former jsoo bug" >:: (fun ctxt ->
-      assert_js ~ctxt ~use_stderr:true ~exit_code:(Unix.WEXITED 8)
+      assert_js ~ctxt ~use_stderr:true ~exit_code:(Unix.WEXITED 1)
         ~foutput:(ends_with "Division_by_zero,-6\n") "mwe");
     "exn0" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "3\n") "exn0");
@@ -149,7 +149,7 @@ let test_exn =
     "exn2" >:: (fun ctxt ->
       assert_js ~ctxt ~foutput:(is_str "4\n") "exn2");
     "raise" >:: (fun ctxt ->
-      assert_js ~ctxt ~use_stderr:true ~exit_code:(Unix.WEXITED 8)
+      assert_js ~ctxt ~use_stderr:true ~exit_code:(Unix.WEXITED 1)
         ~foutput:(ends_with "Failure,-3,abc\n") "raise");
     "exn3" >:: (fun ctxt ->
       assert_bool "loops" (not (loops "exn3"));

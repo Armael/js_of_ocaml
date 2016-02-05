@@ -154,6 +154,7 @@ type expr =
   | Closure of Var.t list * cont
   | Constant of constant
   | Prim of prim * prim_arg list
+  | JSArray of Var.t array
 
 type instr =
     Let of Var.t * expr
@@ -306,6 +307,14 @@ let print_expr f e =
       Format.fprintf f "CONST{%a}" print_constant c
   | Prim (p, l) ->
       print_prim f p l
+  | JSArray a ->
+      Format.fprintf f "[|";
+      for i = 0 to Array.length a - 1 do
+        if i <> 0 then Format.fprintf f "; ";
+        Format.fprintf f "%a" Var.print a.(i)
+      done;
+      Format.fprintf f "|]"
+      
 
 let print_instr f i =
   match i with

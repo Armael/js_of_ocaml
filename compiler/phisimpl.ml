@@ -55,7 +55,7 @@ let expr_deps blocks vars deps defs x e =
       ()
   | Closure (_, cont) ->
       cont_deps blocks vars deps defs cont
-  | Block (_, a) ->
+  | Block (_, a) | JSArray a ->
       Array.iter (fun y -> add_dep deps x y) a
   | Field (y, _) ->
       add_dep deps x y

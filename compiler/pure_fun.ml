@@ -24,7 +24,7 @@ module Primitive = Jsoo_primitive
 
 let pure_expr pure_funs e =
   match e with
-    Const _  | Block _ | Field _ | Closure _ | Constant _ ->
+    Const _  | Block _ | JSArray _ | Field _ | Closure _ | Constant _ ->
       true
   | Apply (f, _l, exact) ->
       exact && VarSet.mem f pure_funs

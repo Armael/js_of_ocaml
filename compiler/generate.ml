@@ -1044,6 +1044,15 @@ and translate_expr ctx queue loc _x e level : _ * J.statement_list =
           (Array.to_list a) ([], const_p, queue)
       in
       (J.EArr (Some (int tag) :: contents), prop, queue),[]
+  | JSArray a ->
+      let (contents, prop, queue) =
+        List.fold_right
+          (fun x (args, prop, queue) ->
+             let ((prop', cx), queue) = access_queue queue x in
+             (Some cx :: args, or_p prop prop', queue))
+          (Array.to_list a) ([], const_p, queue)
+      in
+      (J.EArr contents, prop, queue),[]
   | Field (x, n) ->
       let ((px, cx), queue) = access_queue queue x in
       (J.EAccess (cx, int (n + 1)), or_p px mutable_p, queue),[]

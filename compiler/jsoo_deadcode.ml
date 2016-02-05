@@ -56,7 +56,7 @@ and mark_expr st e =
       ()
   | Apply (f, l, _) ->
       mark_var st f; List.iter (fun x -> mark_var st x) l
-  | Block (_, a) ->
+  | Block (_, a) | JSArray a ->
       Array.iter (fun x -> mark_var st x) a
   | Field (x, _) ->
       mark_var st x

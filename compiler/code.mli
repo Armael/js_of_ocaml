@@ -108,6 +108,7 @@ type expr =
   | Closure of Var.t list * cont
   | Constant of constant          (*XXX REMOVE *)
   | Prim of prim * prim_arg list  (*XXX prim * Var.t list * constant list *)
+  | JSArray of Var.t array
 
 type instr =
     Let of Var.t * expr
