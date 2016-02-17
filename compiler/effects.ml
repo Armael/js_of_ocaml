@@ -411,6 +411,8 @@ let merge_jump_closures jc1 jc2 =
 let cont_closures = ref VarSet.empty
 let is_cont_closure v = VarSet.mem v !cont_closures
 
+let alloc_stack_vars = ref VarSet.empty
+
 (******************************************************************************)
 
 type st = {
@@ -690,9 +692,12 @@ let cps_last
     let old_kx = AddrMap.find (fst cont) st.kx_of_poptrap in
     cps_branch st block_addr k old_kx kf cont
   | Resume (ret, (stack, func, args), cont_opt) ->
-    let ret' = Var.fresh () in
-    [Let (ret', Apply (stack, [func; args], true));
-     Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))] @>
+    (if VarSet.mem stack !alloc_stack_vars then
+       let ret' = Var.fresh () in
+       [Let (ret', Apply (stack, [func; args], true));
+        Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))]
+     else
+       [Let (ret, Apply (stack, [func; args], true))]) @>
     begin match cont_opt with
       | None ->
         cps_return ret
@@ -737,6 +742,7 @@ let cps_instr
   instr list =
   match instr with
   | Let (x, Prim (Extern "caml_alloc_stack", [Pv hv; Pv hx; Pv hf])) ->
+    alloc_stack_vars := VarSet.add x !alloc_stack_vars;
     cps_alloc_stack st x kx kf hv hx hf
   | Let (x, Prim (Extern "caml_bvar_create", [Pv y]))
   | Let (x, Prim (Extern "caml_bvar_take", [Pv y])) ->
@@ -770,17 +776,18 @@ let cps_block st block_addr block =
       []
   in
 
-  let last_instrs, last = cps_last st k kx kf block_addr block.branch in
-
   let body =
     (List.map (cps_instr st kx kf) block.body
      |> List.flatten)
-    @ alloc_jump_closure
-    @ last_instrs in
+    @ alloc_jump_closure in
   
+  (* order is important, cps_last expects cps_instr to be run before it for the
+     body of the block *)
+  let last_instrs, last = cps_last st k kx kf block_addr block.branch in
+
   { params = k :: kx :: kf :: block.params;
     handler = None;
-    body;
+    body = body @ last_instrs;
     branch = last }
 
 let cps_blocks st =
