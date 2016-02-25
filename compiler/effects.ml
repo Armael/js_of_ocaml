@@ -434,6 +434,8 @@ let fresh6 () =
   Var.fresh (), Var.fresh (), Var.fresh (), Var.fresh (), Var.fresh (),
   Var.fresh ()
 
+let (@>) instrs1 (instrs2, last) = (instrs1 @ instrs2, last)
+
 let add_block st block =
   let blocks, free_pc = st.new_blocks in
   st.new_blocks <- (AddrMap.add free_pc block blocks, free_pc + 1);
@@ -486,24 +488,46 @@ let cps_branch st pc k kx kf cont =
   with Not_found ->
     [], Branch (caddr, params)
 
-let closure_of_cont st pc params k kx kf cont =
+let closure_of_cont st pc param k kx kf cont =
   let name = Var.fresh () in
   cont_closures := VarSet.add name !cont_closures;
-  let fresh_params = List.map (fun v -> (v, Var.fresh ())) params in
-  let fresh_of v =
-    try List.assoc v fresh_params with
-      Not_found -> v in
+  let fresh_param = Var.fresh () in
+  let fresh_of v = if v = param then fresh_param else v in
 
   let body, branch =
     cps_branch st pc k kx kf (fst cont, List.map fresh_of (snd cont))
   in
 
   let addr = add_block st {
-    params = List.map fresh_of params;
+    params = [fresh_param];
     handler = None; 
     body; branch;
   } in
-  (name, Closure (params, (addr, params)))
+  (name, Closure ([param], (addr, [param])))
+
+let resume_cont_blocks st =
+  let k1, x1 = fresh2 () in
+  let k2, x2 = fresh2 () in
+  let k_is_id = add_block st {
+    params = [k1; x1];
+    handler = None;
+    body = [];
+    branch = Return x1;
+  } in
+
+  let x2', kret, k_args = fresh3 () in
+  let k_is_not_id = add_block st {
+    params = [k2; x2];
+    handler = None;
+    body = [
+      Let (x2', Prim (Extern "caml_trampoline", [Pv x2]));
+      Let (k_args, JSArray [|x2'|]);
+      Let (kret, Prim (Extern "caml_trampoline_return", [Pv k2; Pv k_args]))
+    ];
+    branch = Return kret;
+  } in
+
+  k_is_id, k_is_not_id
 
 let identity () =
   let x = Var.fresh () in
@@ -533,32 +557,39 @@ let toplevel_kf () =
   }
 
 let alloc_stack_k hv k kx kf =
-  let v, ret = Var.fresh (), Var.fresh () in
+  let v, args, ret = fresh3 () in
   { params = [v];
     handler = None;
-    body = [Let (ret, Apply (hv, [k; kx; kf; v], true))];
+    body = [
+      Let (args, JSArray [|k; kx; kf; v|]);
+      Let (ret, Prim (Extern "caml_trampoline_return", [Pv hv; Pv args]))
+    ];
     branch = Return ret;
   }
 
 let alloc_stack_kx hx k kx kf = alloc_stack_k hx k kx kf
 
 let alloc_stack_kf hf k kx kf =
-  let v, v', ret = Var.fresh (), Var.fresh (), Var.fresh () in
+  let v, v', args, ret = fresh4 () in
   { params = [v; v'];
     handler = None;
-    body = [Let (ret, Apply (hf, [k; kx; kf; v; v'], true))];
+    body = [
+      Let (args, JSArray [|k; kx; kf; v; v'|]);
+      Let (ret, Prim (Extern "caml_trampoline_return", [Pv hf; Pv args]))
+    ];
     branch = Return ret;
   }
 
 let alloc_stack k kx kf =
-  let f, x, ret = Var.fresh (), Var.fresh (), Var.fresh () in
+  let f, x, args, ret = fresh4 () in
   let body =
     (* let ret' = Var.fresh () in *)
     (* if tramp then *)
     (*   [Let (ret', Apply (f, [k; kx; kf; x], true)); *)
     (*    Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))] *)
     (* else *)
-      [Let (ret, Apply (f, [k; kx; kf; x], true))]
+    [Let (args, JSArray [|k; kx; kf; x|]);
+     Let (ret, Prim (Extern "caml_trampoline_return", [Pv f; Pv args]))]
   in
   { params = [f; x];
     handler = None;
@@ -573,6 +604,7 @@ let cps_alloc_stack
   let id, stack_k, stack_kx, stack_kf = fresh4 () in
   let f = Var.fresh () in
   let v1, v2, v3, v4, v5, v6 = fresh6 () in
+  let dummy = Var.fresh () in
   let id_addr = add_block st (identity ()) in
   let stack_k_addr = add_block st (alloc_stack_k hv id kx kf) in
   let stack_kx_addr = add_block st (alloc_stack_kx hx id kx kf) in
@@ -580,6 +612,7 @@ let cps_alloc_stack
   let stack_addr =
     add_block st (alloc_stack stack_k stack_kx stack_kf) in
   [Let (id, Closure ([v1], (id_addr, [v1])));
+   Let (dummy, Prim (Extern "caml_tag_identity_k", [Pv id]));
    Let (stack_k, Closure ([v2], (stack_k_addr, [v2])));
    Let (stack_kx, Closure ([v3], (stack_kx_addr, [v3])));
    Let (stack_kf, Closure ([v4; v5], (stack_kf_addr, [v4; v5])));
@@ -590,7 +623,6 @@ let cps_last
     (k: Var.t) (kx: Var.t) (kf: Var.t)
     (block_addr: addr) (last: last):
   instr list * last =
-  let (@>) instrs1 (instrs2, last) = (instrs1 @ instrs2, last) in
   let cps_jump_cont cont =
     let pc, args = filter_cont_params st cont in
     let args = k :: kx :: kf :: args in
@@ -603,20 +635,23 @@ let cps_last
   in
   
   let cps_return x =
-    let kret = Var.fresh () in
-    [Let (kret, Apply (k, [x], true))],
+    let kret, k_args = fresh2 () in
+    [Let (k_args, JSArray [|x|]);
+     Let (kret, Prim (Extern "caml_trampoline_return", [Pv k; Pv k_args]))],
     Return kret
   in
 
   let cps_branch' = cps_branch st block_addr k kx kf in
-  let closure_of_cont' params = closure_of_cont st block_addr params k kx kf in
+  let closure_of_cont' param =
+    closure_of_cont st block_addr param k kx kf in
 
   match last with
   | Return x ->
     cps_return x
   | Raise x ->
-    let kxret = Var.fresh () in
-    [Let (kxret, Apply (kx, [x], true))],
+    let kxret, kx_args = fresh2 () in
+    [Let (kx_args, JSArray [|x|]);
+     Let (kxret, Prim (Extern "caml_trampoline_return", [Pv kx; Pv kx_args]))],
     Return kxret
   | Stop ->
     (* ??? *)
@@ -635,7 +670,7 @@ let cps_last
 
     Printf.eprintf "=>>>>> handler addr: %d\n" (fst cont2);
     let handler, handler_closure =
-      closure_of_cont st block_addr [x] id_k kx kf cont2 in
+      closure_of_cont st block_addr x id_k kx kf cont2 in
 
     Printf.eprintf "<== %d\n" block_addr;
     begin match AddrMap.find block_addr st.en.exit_of_entry with
@@ -648,7 +683,7 @@ let cps_last
         let cont_block = IntMap.find cont_addr st.blocks in
         let dummy, dummy_v, body_ret = fresh3 () in
         let body, body_closure =
-          closure_of_cont st block_addr [dummy] id_k handler kf cont1 in
+          closure_of_cont st block_addr dummy id_k handler kf cont1 in
 
         let continue_instrs, last =
           if AddrSet.mem cont_addr (AddrMap.find block_addr st.delimited_by) then
@@ -692,16 +727,21 @@ let cps_last
     let old_kx = AddrMap.find (fst cont) st.kx_of_poptrap in
     cps_branch st block_addr k old_kx kf cont
   | Resume (ret, (stack, func, args), cont_opt) ->
-    (if VarSet.mem stack !alloc_stack_vars then
-       let ret' = Var.fresh () in
-       [Let (ret', Apply (stack, [func; args], true));
-        Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))]
-     else
-       [Let (ret, Apply (stack, [func; args], true))]) @>
     begin match cont_opt with
       | None ->
-        cps_return ret
+        let k_is_id = Var.fresh () in
+        let k_is_id_block, k_is_not_id_block = resume_cont_blocks st in
+        [Let (ret, Apply (stack, [func; args], true));
+         Let (k_is_id, Prim (Extern "caml_is_identity_k", [Pv k]));
+        ],
+        Cond (IsTrue, k_is_id,
+              (k_is_id_block, [k; ret]),
+              (k_is_not_id_block, [k; ret]))
+
       | Some cont ->
+        let ret' = Var.fresh () in
+        [Let (ret', Apply (stack, [func; args], true));
+         Let (ret, Prim (Extern "caml_trampoline", [Pv ret']))] @>
         cps_branch' cont
     end
         
@@ -709,7 +749,7 @@ let cps_last
     let cur_stack = Var.fresh () in
     let f, v = fresh2 () in
     let kfret = Var.fresh () in
-    let cur_k, cur_k_closure = closure_of_cont' [ret] cont in
+    let cur_k, cur_k_closure = closure_of_cont' ret cont in
     let stack = add_block st (alloc_stack cur_k kx kf) in
     let kf_args = Var.fresh () in
     [Let (cur_k, cur_k_closure);
@@ -728,8 +768,8 @@ let cps_last
         [Let (ret, Apply (f, k :: kx :: kf :: args, full))],
         Return ret
       | Some cont ->
-        let cur_k, cur_k_closure = closure_of_cont' [ret] cont in
-        let ret' = Var.fresh () in
+        let cur_k, cur_k_closure = closure_of_cont' ret cont in
+        let f_args, ret' = fresh2 () in
         [Let (cur_k, cur_k_closure);
          Let (ret', Apply (f, cur_k :: kx :: kf :: args, full))],
         Return ret'
@@ -943,6 +983,9 @@ let f ((start, blocks, free_pc): Code.program): Code.program =
 
   let k, kx, kf = fresh3 () in
   let v1, v2, v3, v4 = fresh4 () in
+  let start_clos = Var.fresh () in
+  let u, v, w = fresh3 () in
+  let ret, ret' = fresh2 () in
   let toplevel_k_addr = add_block st (toplevel_k ()) in
   let toplevel_kx_addr = add_block st (toplevel_kx ()) in
   let toplevel_kf_addr = add_block st (toplevel_kf ()) in
@@ -952,9 +995,12 @@ let f ((start, blocks, free_pc): Code.program): Code.program =
     body = [
       Let (k, Closure ([v1], (toplevel_k_addr, [v1])));
       Let (kx, Closure ([v2], (toplevel_kx_addr, [v2])));
-      Let (kf, Closure ([v3; v4], (toplevel_kf_addr, [v3; v4])))
+      Let (kf, Closure ([v3; v4], (toplevel_kf_addr, [v3; v4])));
+      Let (start_clos, Closure ([u; v; w], (start, [u; v; w])));
+      Let (ret', Apply (start_clos, [k; kx; kf], true));
+      Let (ret, Prim (Extern "caml_trampoline", [Pv ret']));
     ];
-    branch = Branch (start, [k; kx; kf])
+    branch = Return ret
   } in
   let new_blocks, free_pc = st.new_blocks in
   let blocks = AddrMap.merge

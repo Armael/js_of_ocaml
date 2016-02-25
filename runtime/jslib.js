@@ -87,6 +87,17 @@ function caml_trampoline_return(f,args) {
   return {joo_tramp:f,joo_args:args};
 }
 
+//Provides:caml_tag_identity_k
+function caml_tag_identity_k(k) {
+  k.joo_identity_k = true;
+}
+
+//Provides:caml_is_identity_k
+function caml_is_identity_k(k) {
+  if(k.joo_identity_k) return true;
+  return false;
+}
+
 //Provides: js_print_stdout (const)
 function js_print_stdout(s) {
   // Do not output the last \n if present
